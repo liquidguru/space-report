@@ -6,6 +6,7 @@ obj/
 
 # Publish output
 publish/
+publish-fd/
 *.zip
 
 # Reports the tool writes
