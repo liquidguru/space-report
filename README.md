@@ -172,9 +172,13 @@ points deliberately — following junctions double-counts and can loop forever.
 Two Windows quirks worth knowing about, both of which produce plausible-looking wrong
 answers:
 
-- **`WinSxS` is massively over-reported** by most scanners. Most of its files are hard
-  links that also appear in `System32`, so the same bytes are counted twice. Real size:
-  `DISM /Online /Cleanup-Image /AnalyzeComponentStore`
+- **`WinSxS` is easy to over-report.** Most of its files are hard links that also appear
+  in `System32`, so any scanner that doesn't detect hard links counts the same bytes
+  twice. Some tools do handle this — WizTree and TreeSize among them. **Space Report does
+  not**: it sums every file it walks, so its `WinSxS` figure is inflated the same way.
+  That is why the entry for it points at
+  `DISM /Online /Cleanup-Image /AnalyzeComponentStore` rather than trusting the number,
+  and why the verdict is NEVER regardless of the size shown
 - **`new DirectoryInfo("C:")` means the *current directory* on drive C:**, not the root.
   The trailing backslash is load-bearing; without it a "full drive scan" quietly reports
   the working directory instead

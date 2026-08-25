@@ -205,7 +205,7 @@ $KB = @(
 
   # --- Windows internals ---------------------------------------------------
   @{P='\\Windows\\WinSxS'; N='Component store (side-by-side)'; V='NEVER';
-    W='Every version of every Windows component, kept for updates, repair, and turning features on and off. WinDirStat OVER-REPORTS this badly: most of its files are hard links that also appear in System32, so the same bytes get counted twice. The true unique size is usually a third of what you see.';
+    W='Every version of every Windows component, kept for updates, repair, and turning features on and off. The size shown here is INFLATED: most of its files are hard links that also appear in System32, and this tool counts every file it walks, so the same bytes are counted twice. The true unique size is usually a fraction of it.';
     H='Never delete anything inside it. Real size: DISM /Online /Cleanup-Image /AnalyzeComponentStore. Shrink: DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase'}
 
   @{P='\\Windows\\Installer'; N='Cached MSI/MSP installers'; V='NEVER';
