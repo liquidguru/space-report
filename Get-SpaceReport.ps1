@@ -720,7 +720,7 @@ function Format-Size {
 
 function Format-Wrap {
     param([string]$Text, [int]$Width = 64)
-    $out = New-Object System.Collections.Generic.List[string]
+    $out = [System.Collections.Generic.List[string]]::new()
     $line = ''
     foreach ($w in ($Text -split '\s+')) {
         if ($w -eq '') { continue }
@@ -939,7 +939,7 @@ Write-Host ('  ' + ('-' * 76)) -ForegroundColor DarkGray
 Write-Host "  Scanning $root ... " -NoNewline -ForegroundColor DarkGray
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$walker = New-Object SpaceWalker
+$walker = [SpaceWalker]::new()
 $walker.MinFileBytes = $minBytes
 # Emits "##P <bytes> <files> <folder>" lines on stdout for SpaceReportApp to
 # turn into a progress bar. Silent unless asked for.
@@ -985,8 +985,7 @@ if ($vol) {
 # ---------------------------------------------------------------------------
 $rootDepth = ($root.TrimEnd('\') -split '\\').Count
 
-$candidates = New-Object System.Collections.Generic.List[object]
-foreach ($kv in $walker.DirSizes.GetEnumerator()) {
+$candidates = foreach ($kv in $walker.DirSizes.GetEnumerator()) {
     $p = $kv.Key
     $sz = $kv.Value
     if ($sz -ge 0 -and $sz -lt $minFolderBytes) { continue }
@@ -996,11 +995,11 @@ foreach ($kv in $walker.DirSizes.GetEnumerator()) {
     # Report it if it is shallow enough to be a headline, or if we specifically
     # recognise it - naming the scary folders wherever they sit is the point.
     if ($depth -le 2 -or $info.Known) {
-        $candidates.Add([pscustomobject]@{
+        [pscustomobject]@{
             Path = $p; Bytes = $sz; Type = 'Folder'
             Name = $info.Name; Verdict = $info.Verdict; What = $info.What
             How = $info.How; Known = $info.Known; Mode = $info.Mode
-        })
+        }
     }
 }
 
@@ -1011,7 +1010,7 @@ foreach ($kv in $walker.DirSizes.GetEnumerator()) {
 $ordered = $candidates |
     Sort-Object -Property @{Expression='Bytes';Descending=$true},
                           @{Expression={$_.Path.Length};Descending=$false}
-$kept = New-Object System.Collections.Generic.List[object]
+$kept = [System.Collections.Generic.List[object]]::new()
 foreach ($c in $ordered) {
     $covered = $false
     foreach ($anc in $kept) {
@@ -1027,14 +1026,13 @@ if ($TopFolders -gt 0) {
     $folders = @($kept | Sort-Object Bytes -Descending | Select-Object -First $TopFolders)
 }
 
-$fileList = New-Object System.Collections.Generic.List[object]
-foreach ($f in $walker.BigFiles) {
+$fileList = foreach ($f in $walker.BigFiles) {
     $info = Resolve-Entry -FullPath $f[0] -IsDir $false
-    $fileList.Add([pscustomobject]@{
+    [pscustomobject]@{
         Path = $f[0]; Bytes = [long]$f[1]; Type = 'File'
         Name = $info.Name; Verdict = $info.Verdict; What = $info.What
         How = $info.How; Known = $info.Known; Mode = $info.Mode
-    })
+    }
 }
 # Individual files are the headline, so nothing is suppressed here - if two
 # copies of the same 1GB DLL exist, seeing both listed is the point.
@@ -1104,8 +1102,7 @@ $SystemAreas = @(
     H='Deletable but rarely worth it - tens of MB, and it costs you launch speed while it rebuilds.'}
 )
 
-$sysResults = New-Object System.Collections.Generic.List[object]
-foreach ($a in $SystemAreas) {
+$sysResults = foreach ($a in $SystemAreas) {
     if (-not $a.P) { continue }
     $known = $walker.DirSizes.ContainsKey($a.P.TrimEnd('\'))
     $bytes = -1
@@ -1119,13 +1116,13 @@ foreach ($a in $SystemAreas) {
         catch { $exists = $true }
         if (-not $exists) { continue }        # genuinely not on this machine
     }
-    $sysResults.Add([pscustomobject]@{
+    [pscustomobject]@{
         Name = $a.N; Path = $a.P; Bytes = $bytes; Verdict = $a.V
         What = $a.W; How = $a.H
         # Always 'cmd': these are folders with a proper reclaim route. The tool
         # will not delete them file by file.
         Mode = 'cmd'
-    })
+    }
 }
 $sysResults = @($sysResults | Sort-Object { if ($_.Bytes -lt 0) { -1 } else { $_.Bytes } } -Descending)
 
@@ -1552,8 +1549,6 @@ function Invoke-CleanUp {
         $refusedAll = $dropped
         if ($dropped.Count -gt 0) {
             $nDropped = [int]$dropped.Count
-            # NB: @($Items) here trips a PowerShell binder bug when $Items is a
-            # generic List ("Argument types do not match"). .Count directly is fine.
             $nSupplied = [int]$Items.Count
             Write-Host ("  {0} of {1} supplied path(s) refused outright." -f $nDropped, $nSupplied) -ForegroundColor Red
             Write-Host ''
@@ -1659,8 +1654,8 @@ function Invoke-CleanUp {
 
     if (-not $Permanent) { Add-Type -AssemblyName Microsoft.VisualBasic }
     $freed = 0L; $ok = 0; $failed = 0
-    $removedList = New-Object System.Collections.Generic.List[object]
-    $failedList  = New-Object System.Collections.Generic.List[object]
+    $removedList = [System.Collections.Generic.List[object]]::new()
+    $failedList  = [System.Collections.Generic.List[object]]::new()
     foreach ($t in $togo) {
         try {
             if (-not (Test-Path -LiteralPath $t.Path -PathType Leaf)) {
@@ -1701,8 +1696,7 @@ function Invoke-CleanUp {
 # as they are for a scanned file - the list only says WHICH files to consider.
 function Get-ItemsForPaths {
     param([string[]]$List)
-    $out = New-Object System.Collections.Generic.List[object]
-    foreach ($p in $List) {
+    $out = foreach ($p in $List) {
         $p = $p.Trim()
         if ($p -eq '') { continue }
         if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
@@ -1712,14 +1706,13 @@ function Get-ItemsForPaths {
         $len = 0L
         try { $len = (Get-Item -LiteralPath $p -Force).Length } catch { }
         $info = Resolve-Entry -FullPath $p -IsDir $false
-        $out.Add([pscustomobject]@{
+        [pscustomobject]@{
             Path = $p; Bytes = $len; Type = 'File'
             Name = $info.Name; Verdict = $info.Verdict; What = $info.What
             How = $info.How; Known = $info.Known; Mode = $info.Mode
-        })
+        }
     }
-    # Return a plain array, not the List - see the binder note in Invoke-CleanUp.
-    ,$out.ToArray()
+    ,@($out)
 }
 
 if ($Paths)      { Invoke-CleanUp (Get-ItemsForPaths $Paths) -AlreadyChosen }
