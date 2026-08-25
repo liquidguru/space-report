@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>SpaceReport</AssemblyName>
+    <RootNamespace>SpaceReportApp</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>Space Report</Product>
+    <Description>Shows what is using disk space, what each item is, and whether it can safely be deleted.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+  <!-- ApplicationIcon embeds the icon in the exe; WPF then uses it for the
+       window and taskbar automatically. Do NOT also set Icon="app.ico" on the
+       Window - that needs a separate <Resource> and throws XamlParseException
+       at startup if it is missing, which kills the app before it draws. -->
+
+
+  <ItemGroup>
+    <!-- The UI, and the engine it drives. Both copied next to the exe. -->
+    <None Update="ui.html" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Get-SpaceReport.ps1" Link="Get-SpaceReport.ps1" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

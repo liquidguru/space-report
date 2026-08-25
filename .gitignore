@@ -1,0 +1,12 @@
+# Build output
+bin/
+obj/
+*.user
+*.suo
+
+# Publish output
+publish/
+*.zip
+
+# Reports the tool writes
+space-report-*.html

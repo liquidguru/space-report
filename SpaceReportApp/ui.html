@@ -1,0 +1,649 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Space Report</title>
+<style>
+:root{
+  --bg:#0f1117; --panel:#161922; --panel2:#1c2029; --line:#252a36;
+  --fg:#e8eaf0; --dim:#9aa3b5; --faint:#6b7385;
+  --safe:#2ecc71; --tool:#3ab7d8; --review:#e0a92e; --keep:#8a8f9c; --never:#e05252; --unknown:#b06ad8;
+  --accent:#4f8cff;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);overflow:hidden;
+  font:14px/1.5 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  display:flex;flex-direction:column;user-select:none}
+
+/* ---------- header ---------- */
+header{padding:1.1rem 1.4rem .9rem;background:linear-gradient(180deg,#171b24,#12151d);
+  border-bottom:1px solid var(--line);flex:none}
+.titlerow{display:flex;align-items:baseline;gap:.7rem;margin-bottom:.9rem}
+h1{font-size:1.15rem;margin:0;font-weight:650;letter-spacing:-.01em}
+.sub{color:var(--faint);font-size:12px}
+.badge{margin-left:auto;font-size:11px;padding:.15rem .5rem;border-radius:99px;
+  background:#2a2f3d;color:var(--dim)}
+.badge.elev{background:#1f7a3d33;color:var(--safe)}
+
+.controls{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+select,input[type=number]{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+  border-radius:7px;padding:.5rem .6rem;font:inherit;font-size:13px;outline:none}
+select:focus,input:focus{border-color:var(--accent)}
+label.fld{display:flex;align-items:center;gap:.4rem;color:var(--dim);font-size:12px}
+button{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:.55rem 1.1rem;
+  font:inherit;font-weight:600;font-size:13px;cursor:pointer;transition:filter .12s}
+button:hover:not(:disabled){filter:brightness(1.12)}
+button:disabled{opacity:.45;cursor:default}
+button.ghost{background:#2a2f3d;color:var(--fg)}
+button.danger{background:#c0392b}
+
+/* ---------- drive strip ---------- */
+.drive{margin-top:.9rem;display:none}
+.drive.on{display:block}
+.dbar{height:9px;border-radius:99px;background:#232833;overflow:hidden}
+.dfill{height:100%;border-radius:99px;transition:width .5s}
+.dmeta{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-top:.35rem}
+
+/* ---------- body ---------- */
+main{flex:1;overflow-y:auto;padding:1.1rem 1.4rem 1.4rem;scrollbar-width:thin}
+main::-webkit-scrollbar{width:11px}
+main::-webkit-scrollbar-thumb{background:#2a2f3d;border-radius:99px;border:3px solid var(--bg)}
+
+.state{text-align:center;padding:5rem 1rem;color:var(--faint)}
+.state h2{color:var(--dim);font-weight:500;font-size:1rem;margin:.6rem 0 .3rem}
+.spin{width:34px;height:34px;border:3px solid #2a2f3d;border-top-color:var(--accent);
+  border-radius:50%;margin:0 auto;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+h3.sec{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);
+  margin:1.6rem 0 .6rem;font-weight:700;display:flex;align-items:center;gap:.7rem}
+h3.sec:first-child{margin-top:0}
+h3.sec .grow{flex:1}
+h3.sec button{padding:.3rem .7rem;font-size:11px;text-transform:none;letter-spacing:0}
+
+/* ---------- progress ---------- */
+.prog{max-width:560px;margin:1.6rem auto 0}
+.ptrack{height:10px;border-radius:99px;background:#232833;overflow:hidden;position:relative}
+.pfill{height:100%;border-radius:99px;background:linear-gradient(90deg,#4f8cff,#2ecc71);
+  width:0%;transition:width .35s ease-out}
+.pfill.indet{width:35%;animation:slide 1.3s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+.ppct{font-size:2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:.2rem}
+.pmeta{color:var(--faint);font-size:12px;margin-top:.6rem;text-align:center}
+.pmeta .pf{font-variant-numeric:tabular-nums}
+/* rtl clips the START of the path (the useful end stays visible); plaintext
+   keeps the path's own characters in their normal order. */
+.pmeta .pp{display:block;margin-top:.2rem;font-family:ui-monospace,Consolas,monospace;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  direction:rtl;unicode-bidi:plaintext;opacity:.75}
+
+/* ---------- verdict filter chips ---------- */
+.chips{display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.9rem}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:99px;
+  padding:.35rem .8rem;font-size:12px;cursor:pointer;color:var(--dim);
+  display:flex;align-items:center;gap:.4rem;transition:border-color .12s,color .12s}
+.chip:hover{border-color:#39404f;color:var(--fg)}
+.chip.on{border-color:var(--accent);background:#4f8cff18;color:var(--fg)}
+.chip .dot{width:8px;height:8px;border-radius:50%}
+.chip .n{color:var(--faint);font-size:11px}
+.chip.syschip{margin-left:auto;border-color:#8a6a1266;color:var(--review)}
+.chip.syschip:hover{border-color:var(--review)}
+.chip.syschip.on{border-color:var(--review);background:#8a6a1220;color:var(--fg)}
+
+/* ---------- inline notice ---------- */
+.notice{display:flex;align-items:center;gap:1rem;background:#8a6a1218;border:1px solid #8a6a1266;
+  border-left-width:3px;border-radius:9px;padding:.8rem 1rem;margin:0 0 .8rem;
+  color:var(--dim);font-size:12.5px;line-height:1.5}
+.notice b{color:var(--review)}
+.notice button{flex:none;white-space:nowrap}
+
+/* ---------- type rollup ---------- */
+.types{display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:.55rem}
+.tcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem;
+  cursor:pointer;transition:border-color .12s,background .12s}
+.tcard:hover{border-color:#39404f;background:var(--panel2)}
+.tcard.on{border-color:var(--accent);background:#4f8cff14}
+.tsize{font-size:1.05rem;font-weight:680;letter-spacing:-.02em}
+.tname{color:var(--dim);font-size:12px;margin-top:.1rem}
+.tcount{color:var(--faint);font-size:11px;margin-top:.15rem}
+
+/* ---------- file rows ---------- */
+.row{display:flex;gap:.8rem;align-items:flex-start;background:var(--panel);
+  border:1px solid var(--line);border-left-width:3px;border-radius:9px;
+  padding:.7rem .85rem;margin-bottom:.45rem;transition:border-color .12s,background .12s}
+.row:hover{background:var(--panel2)}
+.row.sel{border-color:var(--accent);background:#4f8cff12}
+.row.locked{opacity:.62}
+.row .box{flex:none;padding-top:.1rem}
+.row input[type=checkbox]{width:17px;height:17px;cursor:pointer;accent-color:var(--accent)}
+.lock{font-size:14px;opacity:.5;cursor:help}
+.mid{flex:1;min-width:0}
+.p{font:12px/1.45 ui-monospace,"Cascadia Mono",Consolas,monospace;color:var(--dim);
+  word-break:break-all;cursor:pointer}
+.p:hover{color:var(--fg);text-decoration:underline}
+.nm{font-weight:640;margin-top:.2rem}
+.wh{color:var(--dim);font-size:12.5px;margin-top:.1rem}
+.how{color:#7fd6e4;font-size:12.5px;margin-top:.25rem}
+.right{flex:none;text-align:right;min-width:8.4rem}
+.sz{font-size:1rem;font-weight:680;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;margin-top:.3rem;font-size:10px;font-weight:750;letter-spacing:.05em;
+  padding:.13rem .45rem;border-radius:4px}
+.act{display:block;margin-top:.28rem;font-size:10.5px;color:var(--faint)}
+
+.v-SAFE{border-left-color:var(--safe)}    .p-SAFE{background:#1f7a3d;color:#fff}
+.v-TOOL{border-left-color:var(--tool)}    .p-TOOL{background:#1a6b86;color:#fff}
+.v-REVIEW{border-left-color:var(--review)}.p-REVIEW{background:#8a6a12;color:#fff}
+.v-KEEP{border-left-color:var(--keep)}    .p-KEEP{background:#4a4a52;color:#fff}
+.v-NEVER{border-left-color:var(--never)}  .p-NEVER{background:#8c2020;color:#fff}
+.v-UNKNOWN{border-left-color:var(--unknown)} .p-UNKNOWN{background:#6a2c86;color:#fff}
+
+/* ---------- action bar ---------- */
+footer{flex:none;background:#12151d;border-top:1px solid var(--line);padding:.8rem 1.4rem;
+  display:flex;align-items:center;gap:.9rem;box-shadow:0 -10px 26px #0007}
+footer.idle{color:var(--faint)}
+#selsum{font-weight:640}
+#selsum small{display:block;color:var(--faint);font-weight:400;font-size:11.5px}
+.spacer{flex:1}
+label.perm{display:flex;align-items:center;gap:.4rem;color:var(--dim);font-size:12px;cursor:pointer}
+.binbox{display:flex;align-items:center;gap:.5rem;color:var(--dim);font-size:12px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.3rem .35rem .3rem .7rem}
+.binbox.full{border-color:#8a6a1288;color:var(--review)}
+.binbox button{padding:.3rem .6rem;font-size:11px}
+
+/* ---------- modal ---------- */
+.scrim{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;
+  padding:2rem;z-index:50}
+.scrim.on{display:flex}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:1.4rem;
+  max-width:640px;width:100%;max-height:80vh;display:flex;flex-direction:column;
+  box-shadow:0 24px 60px #000b}
+.modal h2{margin:0 0 .5rem;font-size:1.05rem}
+.mlist{overflow-y:auto;margin:.7rem 0;border:1px solid var(--line);border-radius:8px;
+  background:#0d1016;padding:.6rem}
+.mrow{display:flex;gap:.7rem;font-size:12px;padding:.2rem 0;color:var(--dim)}
+.mrow b{color:var(--fg);font-variant-numeric:tabular-nums;flex:none;width:5.2rem;text-align:right}
+.mrow span{font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+.warn{background:#c0392b22;border:1px solid #c0392b66;color:#ffb4a8;border-radius:8px;
+  padding:.6rem .75rem;font-size:12.5px;margin-top:.3rem}
+.mbtn{display:flex;gap:.6rem;justify-content:flex-end;margin-top:.9rem}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="titlerow">
+    <h1>Space Report</h1>
+    <span class="sub">what is using your disk, and what is safe to remove</span>
+    <span class="badge" id="elev">standard</span>
+  </div>
+  <div class="controls">
+    <label class="fld">Drive <select id="drive"></select></label>
+    <label class="fld">Files over <input type="number" id="minmb" value="500" min="1" step="100" style="width:5.6rem"> MB</label>
+    <button id="scan">Scan</button>
+    <button class="ghost" id="elevbtn" title="Restart with administrator rights. Needed to measure Delivery Optimization, the Windows Search index, Defender's scan history and other protected system-cleanup areas.">Run as admin</button>
+  </div>
+  <div class="drive" id="dstrip">
+    <div class="dbar"><div class="dfill" id="dfill"></div></div>
+    <div class="dmeta"><span id="dleft"></span><span id="dright"></span></div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="state">
+    <h2>Pick a drive and press Scan</h2>
+    <div>A full drive takes about half a minute.</div>
+  </div>
+</main>
+
+<footer class="idle" id="foot">
+  <div id="selsum">Nothing selected</div>
+  <div class="spacer"></div>
+  <div class="binbox" id="binbox" title="Recycled files still take up space until the bin is emptied">
+    <span id="bintext">Recycle Bin —</span>
+    <button class="ghost" id="binopen">Open</button>
+  </div>
+  <label class="perm"><input type="checkbox" id="perm"> delete permanently (skip Recycle Bin)</label>
+  <button class="ghost" id="clear" disabled>Clear</button>
+  <button class="danger" id="del" disabled>Delete selected</button>
+</footer>
+
+<div class="scrim" id="adminscrim">
+  <div class="modal" style="max-width:520px">
+    <h2>Run as administrator?</h2>
+    <div class="wh" style="margin-bottom:.2rem">
+      Space Report works fine without it &mdash; every file on your drive is still found.
+    </div>
+    <div class="wh">
+      What you <b style="color:var(--fg)">won&rsquo;t</b> see is the protected system-cleanup
+      areas: Delivery Optimization, kernel telemetry dumps, the Windows Search index and
+      Defender&rsquo;s scan history. Windows blocks ordinary programs from measuring those,
+      and they are commonly several GB between them.
+    </div>
+    <div class="warn" style="background:#3ab7d822;border-color:#3ab7d855;color:#a9e4f0">
+      Choosing yes restarts the app and asks Windows for permission. You will need to
+      run the scan again.
+    </div>
+    <div class="mbtn" style="align-items:center">
+      <label class="perm" style="margin-right:auto">
+        <input type="checkbox" id="dontask"> don&rsquo;t ask again
+      </label>
+      <button class="ghost" id="adminno">Continue without</button>
+      <button id="adminyes">Run as admin</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim">
+  <div class="modal">
+    <h2 id="mtitle">Confirm</h2>
+    <div id="mbody"></div>
+    <div class="mlist" id="mlist"></div>
+    <div id="mwarn"></div>
+    <div class="mbtn">
+      <button class="ghost" id="mcancel">Cancel</button>
+      <button class="danger" id="mok">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Opened outside the app (plain browser)? Stub the host bridge so the page
+// still renders instead of dying on the first postMessage.
+if (!window.chrome || !window.chrome.webview) {
+  window.chrome = window.chrome || {};
+  window.chrome.webview = { postMessage:function(){}, addEventListener:function(){} };
+}
+
+var FILES = [], FOLDERS = [], SYSTEM = [], SELECTED = {}, TYPEFILTER = null, VFILTER = null, BUSY = false;
+var ELEVATED = false, SYSVIEW = false;
+var VORDER = ['SAFE','TOOL','REVIEW','UNKNOWN','KEEP','NEVER'];
+var VCOLOR = {SAFE:'var(--safe)',TOOL:'var(--tool)',REVIEW:'var(--review)',
+              KEEP:'var(--keep)',NEVER:'var(--never)',UNKNOWN:'var(--unknown)'};
+var ACT = { file:'can delete', app:'uninstall via app', cmd:'needs a command', never:'protected' };
+var ACTHELP = {
+  app:'Belongs to an installed application. Removing one file corrupts the install — uninstall it properly instead.',
+  cmd:'Has a proper command for reclaiming it, or is locked while Windows runs.',
+  never:'Protected: deleting this breaks Windows or destroys data that cannot be regenerated.'
+};
+
+// Post the OBJECT, not a JSON string. postMessage(JSON.stringify(o)) makes
+// WebMessageAsJson a quoted string on the host side, and TryGetProperty then
+// throws - which killed the whole window with no error.
+function post(o){ window.chrome.webview.postMessage(o); }
+function fmt(b){ var u=['B','KB','MB','GB','TB'],i=0; b=Number(b)||0;
+  while(b>=1024&&i<4){b/=1024;i++} return b.toFixed(1)+' '+u[i]; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function el(id){ return document.getElementById(id); }
+
+/* ---------- messages from the app ---------- */
+window.chrome.webview.addEventListener('message', function(e){
+  var m = e.data;
+  if (typeof m === 'string') { try { m = JSON.parse(m); } catch(x){ return; } }
+  if (m.type === 'ready')   onReady(m);
+  if (m.type === 'drives')  onDrives(m.drives);
+  if (m.type === 'recycle') onRecycle(m);
+  if (m.type === 'progress') onProgress(m);
+  if (m.type === 'scan')    onScan(m.data);
+  if (m.type === 'deleted') onDeleted(m.data);
+  if (m.type === 'error')   onError(m);
+});
+
+function onReady(m){
+  ELEVATED = !!m.elevated;
+  if (ELEVATED){ el('elev').textContent='administrator'; el('elev').className='badge elev';
+                 el('elevbtn').style.display='none'; }
+  else {
+    // Offer elevation once, up front, since the difference is large (hundreds of
+    // MB versus tens of GB) and it cannot be applied retrospectively - elevating
+    // restarts the app. The preference comes from the host, not localStorage.
+    if (!m.skipAdminPrompt) el('adminscrim').className = 'scrim on';
+  }
+  if (!m.scriptFound){
+    el('main').innerHTML = '<div class="state"><h2>Get-SpaceReport.ps1 is missing</h2>'+
+      '<div>Expected next to the application:<br><code>'+esc(m.script)+'</code></div></div>';
+    el('scan').disabled = true;
+  }
+}
+
+function onDrives(ds){
+  var s = el('drive'); s.innerHTML='';
+  (ds||[]).forEach(function(d){
+    var o=document.createElement('option'); o.value=d.name;
+    o.textContent = d.name.replace('\\','') + '  ' + (d.label===d.name?'':d.label+'  ') +
+                    '(' + fmt(d.free) + ' free of ' + fmt(d.size) + ')';
+    s.appendChild(o);
+  });
+}
+
+function onError(m){
+  BUSY=false; el('scan').disabled=false;
+  el('main').innerHTML='<div class="state"><h2>'+esc(m.stage==='scan'?'Scan failed':'Delete failed')+
+    '</h2><div>'+esc(m.message||'Unknown error')+'</div></div>';
+}
+
+/* ---------- scanning ---------- */
+el('scan').onclick = function(){
+  if (BUSY) return;
+  BUSY=true; el('scan').disabled=true; SELECTED={}; TYPEFILTER=null; VFILTER=null; syncFoot();
+  el('main').innerHTML='<div class="state" style="padding-top:4rem">'+
+    '<h2>Scanning '+esc(el('drive').value)+'</h2>'+
+    '<div class="prog">'+
+      '<div class="ppct" id="ppct">0%</div>'+
+      '<div class="ptrack"><div class="pfill" id="pfill"></div></div>'+
+      '<div class="pmeta"><span class="pf" id="pfiles">starting&hellip;</span>'+
+        '<span class="pp" id="ppath"></span></div>'+
+    '</div></div>';
+  post({cmd:'scan', path:el('drive').value, minMB:parseInt(el('minmb').value,10)||500});
+};
+
+function onProgress(m){
+  var pct=el('ppct'), fill=el('pfill');
+  if(!pct||!fill) return;
+  if(m.pct>=0){
+    fill.className='pfill'; fill.style.width=m.pct+'%'; pct.textContent=m.pct+'%';
+  } else {
+    // Scanning a folder rather than a whole drive: no honest denominator,
+    // so show the running total instead of a fake percentage.
+    fill.className='pfill indet'; pct.textContent=fmt(m.seen);
+  }
+  el('pfiles').textContent = Number(m.files).toLocaleString()+' files  ·  '+fmt(m.seen);
+  el('ppath').textContent  = m.folder;
+}
+el('elevbtn').onclick = function(){ post({cmd:'elevate'}); };
+
+function onScan(d){
+  BUSY=false; el('scan').disabled=false;
+  FILES = d.Files||[]; FOLDERS = d.Folders||[]; SYSTEM = d.System||[];
+  var used = d.DriveSize - d.DriveFree, pct = d.DriveSize? Math.round(used/d.DriveSize*100):0;
+  el('dstrip').className='drive on';
+  el('dfill').style.width=pct+'%';
+  el('dfill').style.background = pct>=90?'var(--never)':(pct>=75?'var(--review)':'var(--safe)');
+  el('dleft').textContent = d.Drive+'  '+pct+'% used';
+  el('dright').textContent = fmt(d.DriveFree)+' free of '+fmt(d.DriveSize)+
+                             '  ·  '+Number(d.FileCount).toLocaleString()+' files scanned';
+  render();
+}
+
+/* ---------- rendering ---------- */
+function typeGroups(){
+  var g={};
+  // Respect the verdict chip, so picking SAFE also narrows the type breakdown.
+  FILES.filter(function(f){return !VFILTER||f.Verdict===VFILTER}).forEach(function(f){
+    if(!g[f.Name]) g[f.Name]={name:f.Name,bytes:0,count:0,verdict:f.Verdict};
+    g[f.Name].bytes+=Number(f.Bytes); g[f.Name].count++;
+  });
+  return Object.keys(g).map(function(k){return g[k]}).sort(function(a,b){return b.bytes-a.bytes});
+}
+
+function render(){
+  if(!FILES.length){
+    el('main').innerHTML='<div class="state"><h2>Nothing that big</h2>'+
+      '<div>No files over '+esc(el('minmb').value)+' MB. Try a smaller threshold.</div></div>';
+    return;
+  }
+  var scope=FILES.filter(function(f){return !VFILTER||f.Verdict===VFILTER});
+  var total=scope.reduce(function(a,f){return a+Number(f.Bytes)},0);
+  var groups=typeGroups(), h='';
+
+  // Verdict chips: the quick way to get straight to everything marked SAFE.
+  h+='<div class="chips">';
+  h+='<div class="chip'+(VFILTER===null&&!SYSVIEW?' on':'')+'" data-v="">All  <span class="n">'+
+     FILES.length+'</span></div>';
+  VORDER.forEach(function(v){
+    var sub=FILES.filter(function(f){return f.Verdict===v});
+    if(!sub.length) return;
+    var sz=sub.reduce(function(a,f){return a+Number(f.Bytes)},0);
+    h+='<div class="chip'+(VFILTER===v&&!SYSVIEW?' on':'')+'" data-v="'+v+'">'+
+       '<span class="dot" style="background:'+VCOLOR[v]+'"></span>'+v+
+       '  <span class="n">'+sub.length+' · '+fmt(sz)+'</span></div>';
+  });
+  // Without this the system section is buried under a hundred file rows and
+  // nobody ever finds it.
+  if(SYSTEM.length){
+    var sk=SYSTEM.filter(function(s){return Number(s.Bytes)>0});
+    var st=sk.reduce(function(a,s){return a+Number(s.Bytes)},0);
+    var lk=SYSTEM.filter(function(s){return Number(s.Bytes)<0}).length;
+    h+='<div class="chip syschip'+(SYSVIEW?' on':'')+'" id="syschip">🧹 System cleanup'+
+       '  <span class="n">'+fmt(st)+(lk?' · '+lk+' need admin':'')+'</span></div>';
+  }
+  h+='</div>';
+
+  if(SYSVIEW){ el('main').innerHTML = h + systemHtml(); return; }
+
+  h+='<h3 class="sec"><span>'+(VFILTER?VFILTER+' by type':'By type')+' &mdash; '+
+     scope.length+' files, '+fmt(total)+' (click to filter)</span></h3><div class="types">';
+  groups.forEach(function(g){
+    h+='<div class="tcard'+(TYPEFILTER===g.name?' on':'')+'" data-t="'+esc(g.name)+'">'+
+       '<div class="tsize">'+fmt(g.bytes)+'</div>'+
+       '<div class="tname">'+esc(g.name)+'</div>'+
+       '<div class="tcount">'+g.count+' file'+(g.count>1?'s':'')+'</div></div>';
+  });
+  h+='</div>';
+
+  var list=FILES.filter(function(f){
+    return (!TYPEFILTER||f.Name===TYPEFILTER) && (!VFILTER||f.Verdict===VFILTER); });
+
+  var canTick=list.filter(function(f){return f.Mode==='file'});
+  var tickSize=canTick.reduce(function(a,f){return a+Number(f.Bytes)},0);
+  var allOn=canTick.length>0 && canTick.every(function(f){return SELECTED[f.Path]});
+
+  var heading = TYPEFILTER ? esc(TYPEFILTER)
+              : VFILTER    ? VFILTER+' files'
+              : 'Every file over '+esc(el('minmb').value)+' MB';
+  h+='<h3 class="sec"><span>'+heading+' &mdash; '+list.length+' file'+
+     (list.length===1?'':'s')+'</span><span class="grow"></span>';
+  if(canTick.length){
+    h+='<button class="ghost" id="selall">'+(allOn?'Deselect all':
+        'Select all '+canTick.length+' deletable · '+fmt(tickSize))+'</button>';
+  }
+  h+='</h3>';
+  if(list.length && !canTick.length){
+    h+='<div class="wh" style="margin:-.2rem 0 .7rem">None of these can be deleted as '+
+       'plain files &mdash; they belong to applications or need their own command.</div>';
+  }
+  list.forEach(function(f,i){
+    var idx=FILES.indexOf(f), can=f.Mode==='file', sel=!!SELECTED[f.Path];
+    h+='<div class="row v-'+f.Verdict+(sel?' sel':'')+(can?'':' locked')+'" data-i="'+idx+'">'+
+       '<div class="box">'+(can
+          ? '<input type="checkbox" data-p="'+esc(f.Path)+'"'+(sel?' checked':'')+'>'
+          : '<span class="lock" title="'+esc(ACTHELP[f.Mode]||'')+'">🔒</span>')+'</div>'+
+       '<div class="mid">'+
+         '<div class="p" data-r="'+esc(f.Path)+'" title="Show in Explorer">'+esc(f.Path)+'</div>'+
+         '<div class="nm">'+esc(f.Name)+'</div>'+
+         '<div class="wh">'+esc(f.What)+'</div>'+
+         (f.How?'<div class="how">'+esc(f.How)+'</div>':'')+
+       '</div>'+
+       '<div class="right"><div class="sz">'+fmt(f.Bytes)+'</div>'+
+         '<span class="pill p-'+f.Verdict+'">'+f.Verdict+'</span>'+
+         '<span class="act">'+ACT[f.Mode]+'</span></div>'+
+       '</div>';
+  });
+
+  if(SYSTEM.length && !TYPEFILTER && !VFILTER) h+=systemHtml();
+
+  if(FOLDERS.length){
+    h+='<h3 class="sec">Biggest folders &mdash; for context, not deletable here</h3>';
+    FOLDERS.forEach(function(f){
+      h+='<div class="row v-'+f.Verdict+' locked">'+
+         '<div class="box"><span class="lock" title="Folders are shown for context only">📁</span></div>'+
+         '<div class="mid"><div class="p" data-r="'+esc(f.Path)+'">'+esc(f.Path)+'</div>'+
+         '<div class="nm">'+esc(f.Name)+'</div><div class="wh">'+esc(f.What)+'</div>'+
+         (f.How?'<div class="how">'+esc(f.How)+'</div>':'')+'</div>'+
+         '<div class="right"><div class="sz">'+fmt(f.Bytes)+'</div>'+
+         '<span class="pill p-'+f.Verdict+'">'+f.Verdict+'</span></div></div>';
+    });
+  }
+  el('main').innerHTML=h;
+}
+
+// Disk Cleanup territory. Thousands of small files each, so none of them can
+// ever appear in the file list - they need their own section.
+function systemHtml(){
+    var h='';
+    var known=SYSTEM.filter(function(s){return Number(s.Bytes)>0});
+    var stot=known.reduce(function(a,s){return a+Number(s.Bytes)},0);
+    var lockedN=SYSTEM.filter(function(s){return Number(s.Bytes)<0}).length;
+    h+='<h3 class="sec"><span>System cleanup areas &mdash; '+fmt(stot)+' measurable</span></h3>';
+    h+='<div class="wh" style="margin:-.2rem 0 .7rem">What Windows Disk Cleanup calls '+
+       '&ldquo;system files&rdquo;. Each is thousands of small files, so none of them show up '+
+       'in the list above however low you set the threshold. '+
+       '<b style="color:var(--dim)">🔧 means reclaim it with the command shown</b> &mdash; '+
+       'Space Report never deletes system areas file by file.</div>';
+    // The one place the admin button is genuinely worth pressing, so say so here
+    // rather than leaving an unexplained button in the header.
+    if(lockedN && !ELEVATED){
+      h+='<div class="notice"><div><b>'+lockedN+' of these can&rsquo;t be measured without '+
+         'administrator rights.</b><br>Windows protects them from ordinary programs. '+
+         'Delivery Optimization, the Search index and Defender&rsquo;s scan history are '+
+         'often several GB between them.</div>'+
+         '<button id="elevhere">Run as admin</button></div>';
+    } else if(lockedN){
+      h+='<div class="notice"><div>'+lockedN+' still unreadable even as administrator &mdash; '+
+         'those are locked by Windows while it is running.</div></div>';
+    }
+    SYSTEM.forEach(function(s){
+      var unknown=Number(s.Bytes)<0;
+      // Deliberately NOT a padlock. These are not blocked - they simply have a
+      // proper reclaim route, and reusing the padlock made them read as
+      // inaccessible when most of them are perfectly readable.
+      h+='<div class="row v-'+s.Verdict+' locked">'+
+         '<div class="box"><span class="lock" title="Reclaim this with the command shown. '+
+         'Space Report will not delete system areas file by file.">🔧</span></div>'+
+         '<div class="mid"><div class="nm">'+esc(s.Name)+'</div>'+
+         '<div class="p" data-r="'+esc(s.Path)+'" title="Show in Explorer">'+esc(s.Path)+'</div>'+
+         '<div class="wh">'+esc(s.What)+'</div>'+
+         '<div class="how">'+esc(s.How)+'</div></div>'+
+         '<div class="right"><div class="sz"'+(unknown?
+             ' style="color:var(--review);font-size:.78rem" title="Windows blocks ordinary'+
+             ' programs from reading this folder. Restart the app as administrator to see its size."':'')+'>'+
+           (unknown?'needs admin':fmt(s.Bytes))+'</div>'+
+         '<span class="pill p-'+s.Verdict+'">'+s.Verdict+'</span></div></div>';
+    });
+    return h;
+}
+
+/* ---------- interaction ---------- */
+el('main').addEventListener('click', function(e){
+  var t=e.target;
+
+  if(t.id==='elevhere'){ post({cmd:'elevate'}); return; }
+
+  if(t.id==='selall'){
+    var list=FILES.filter(function(f){
+      return (!TYPEFILTER||f.Name===TYPEFILTER) && (!VFILTER||f.Verdict===VFILTER)
+             && f.Mode==='file'; });
+    var allOn=list.length>0 && list.every(function(f){return SELECTED[f.Path]});
+    list.forEach(function(f){ if(allOn) delete SELECTED[f.Path]; else SELECTED[f.Path]=true; });
+    render(); syncFoot(); return;
+  }
+
+  var chip=t.closest?t.closest('.chip'):null;
+  if(chip){
+    if(chip.id==='syschip'){ SYSVIEW=!SYSVIEW; TYPEFILTER=null; VFILTER=null; render(); return; }
+    var v=chip.getAttribute('data-v');
+    SYSVIEW=false;
+    VFILTER = v ? (VFILTER===v?null:v) : null;
+    TYPEFILTER=null; render(); return;
+  }
+
+  if(t.classList.contains('tcard')||t.closest('.tcard')){
+    var card=t.closest('.tcard'), n=card.getAttribute('data-t');
+    TYPEFILTER = (TYPEFILTER===n)?null:n; render(); return;
+  }
+  if(t.classList.contains('p')){ post({cmd:'reveal', path:t.getAttribute('data-r')}); return; }
+  if(t.type==='checkbox'){
+    var p=t.getAttribute('data-p');
+    if(t.checked) SELECTED[p]=true; else delete SELECTED[p];
+    t.closest('.row').classList.toggle('sel', t.checked);
+    syncFoot();
+  }
+});
+
+function selectedFiles(){ return FILES.filter(function(f){return SELECTED[f.Path]}); }
+function syncFoot(){
+  var s=selectedFiles(), b=s.reduce(function(a,f){return a+Number(f.Bytes)},0);
+  el('del').disabled = el('clear').disabled = !s.length;
+  el('foot').className = s.length?'':'idle';
+  el('selsum').innerHTML = s.length
+    ? s.length+' file'+(s.length>1?'s':'')+' selected  ·  '+fmt(b)+
+      '<small>'+(el('perm').checked?'will be deleted permanently':'will go to the Recycle Bin')+'</small>'
+    : 'Nothing selected';
+}
+el('perm').onchange=syncFoot;
+el('clear').onclick=function(){ SELECTED={}; render(); syncFoot(); };
+
+/* ---------- confirm + delete ---------- */
+el('del').onclick=function(){
+  var s=selectedFiles(); if(!s.length) return;
+  var b=s.reduce(function(a,f){return a+Number(f.Bytes)},0), perm=el('perm').checked;
+  el('mtitle').textContent = perm?'Delete permanently?':'Move to the Recycle Bin?';
+  el('mbody').innerHTML = '<div class="sub" style="color:var(--dim)">'+s.length+' file'+
+    (s.length>1?'s':'')+', '+fmt(b)+'</div>';
+  el('mlist').innerHTML = s.map(function(f){
+    return '<div class="mrow"><b>'+fmt(f.Bytes)+'</b><span>'+esc(f.Path)+'</span></div>'; }).join('');
+  el('mwarn').innerHTML = perm
+    ? '<div class="warn"><b>This cannot be undone.</b> These files will not be recoverable.</div>'
+    : '<div class="warn" style="background:#3ab7d822;border-color:#3ab7d855;color:#a9e4f0">'+
+      'Recoverable from the Recycle Bin. Note the space is not actually freed until you empty it.</div>';
+  el('scrim').className='scrim on';
+};
+el('mcancel').onclick=function(){ el('scrim').className='scrim'; };
+el('mok').onclick=function(){
+  var s=selectedFiles(); el('scrim').className='scrim';
+  el('main').innerHTML='<div class="state"><div class="spin"></div><h2>Removing '+s.length+' file'+
+    (s.length>1?'s':'')+'</h2></div>';
+  BUSY=true;
+  post({cmd:'delete', paths:s.map(function(f){return f.Path}), permanent:el('perm').checked});
+};
+
+function onRecycle(m){
+  var n=Number(m.items)||0, s=Number(m.size)||0;
+  el('bintext').textContent = n
+    ? 'Recycle Bin  '+fmt(s)+'  ('+n.toLocaleString()+' item'+(n===1?'':'s')+')'
+    : 'Recycle Bin  empty';
+  el('binbox').className = n ? 'binbox full' : 'binbox';
+}
+el('binopen').onclick = function(){ post({cmd:'openrecycle'}); };
+
+function closeAdminPrompt(){
+  if (el('dontask').checked) post({cmd:'setskipadmin', value:true});
+  el('adminscrim').className = 'scrim';
+}
+el('adminno').onclick  = closeAdminPrompt;
+el('adminyes').onclick = function(){ closeAdminPrompt(); post({cmd:'elevate'}); };
+
+// Ask the host for the drive list as soon as the page is live. Also exercises
+// the JS->host direction immediately, so a broken bridge shows up at startup
+// rather than the first time a button is pressed.
+post({cmd:'drives'});
+post({cmd:'recycle'});
+
+function onDeleted(r){
+  BUSY=false;
+  var gone={}; (r.Removed||[]).forEach(function(x){gone[x.Path]=true});
+  FILES = FILES.filter(function(f){return !gone[f.Path]});
+  SELECTED={};
+  var h='<div class="state" style="padding:3rem 1rem">';
+  h+='<h2 style="color:var(--safe);font-size:1.2rem">'+(r.Removed||[]).length+' file'+
+     ((r.Removed||[]).length===1?'':'s')+' removed  ·  '+fmt(r.Freed)+'</h2>';
+  if(r.Recycled && (r.Removed||[]).length)
+    h+='<div style="color:var(--review)">Still in the Recycle Bin &mdash; the space is not free '+
+       'until you empty it.<br><button class="ghost" id="openbin2" style="margin-top:.7rem">'+
+       'Open Recycle Bin</button></div>';
+  (r.Refused||[]).forEach(function(x){
+    h+='<div style="color:var(--never);margin-top:.5rem">REFUSED &nbsp;'+esc(x.Name)+
+       '<br><small style="color:var(--faint)">'+esc(x.Path)+'</small></div>'; });
+  (r.Failed||[]).forEach(function(x){
+    h+='<div style="color:var(--never);margin-top:.5rem">FAILED &nbsp;'+esc(x.Path)+
+       '<br><small style="color:var(--faint)">'+esc(x.Reason)+'</small></div>'; });
+  h+='<div style="margin-top:1.4rem"><button id="back">Back to results</button></div></div>';
+  el('main').innerHTML=h;
+  el('back').onclick=function(){ render(); };
+  var ob=el('openbin2'); if(ob) ob.onclick=function(){ post({cmd:'openrecycle'}); };
+  syncFoot();
+}
+</script>
+</body>
+</html>
