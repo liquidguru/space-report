@@ -92,6 +92,7 @@ param(
     [int]   $TopFolders  = 8,
     [int]   $MinFolderMB = 2000,
     [switch]$Ollama,
+    [switch]$SelfTest,
     [switch]$Progress,
     [switch]$Html,
     [string]$Json,
@@ -117,20 +118,9 @@ Set-StrictMode -Version Latest
 #   NEVER  - deleting breaks Windows or loses data you cannot get back
 # ---------------------------------------------------------------------------
 $KB = @(
-  # --- identity beats location. These sit at the very top so that a file is
-  #     described by WHAT IT IS even when it happens to live somewhere that a
-  #     broader rule below would otherwise claim (e.g. a .pst inside Temp). ---
-  @{P='\.pst$'; N='Outlook data file (archive)'; V='NEVER';
-    W='An Outlook personal folders file. Unlike a .ost this is frequently the ONLY copy of the mail in it - archived mail is usually not on any server.';
-    H='Back it up. Compact it via File > Account Settings > Data Files > Settings > Compact Now.'}
-
-  @{P='\.lrcat$'; N='Lightroom catalogue'; V='NEVER';
-    W='Your edits, ratings, keywords and collections. Not the photos themselves, but losing it loses all your work on them.';
-    H='Back it up.'}
-
-  @{P='\\Saved Games\\|\\My Games\\'; N='Game saves'; V='NEVER';
-    W='Your save files. Small, and gone forever if deleted without cloud sync.';
-    H='Leave them. If anything, back them up.'}
+  # NOTE: .pst, .lrcat and game saves are NOT here. They live in $SafetyRules,
+  # which is evaluated before this list, so their labelling cannot depend on
+  # where they appear in it.
 
   # --- structural containers. Anchored to match the folder EXACTLY, so they
   #     never swallow the specific rules for things underneath them. --------
@@ -756,46 +746,108 @@ $CmdManaged = 'Hibernation|Recycle Bin|previous Windows|rollback|Setup staging|'
               'Outlook|emulator images|Component store|Cached MSI|bootstrapper|' +
               'Virtual machine disk|Windows Recovery'
 
-# Defence in depth. These are judged on the PATH, not the classification, so
-# they hold even if a broad location rule matched first and called the file
-# something harmless. Learned the hard way: a .pst sitting under AppData\Temp
-# was classified "your temp folder, SAFE" and would have been deleted.
-$NeverPlainDelete = '\\pagefile\.sys$|\\swapfile\.sys$|\\hiberfil\.sys$|\\DumpStack|' +
-                    '\.(pst|lrcat|vhd|vhdx|avhdx|vmdk|qcow2|vdi)$|' +
-                    '\\Saved Games\\|\\My Games\\|\\System Volume Information\\|' +
-                    '\\Windows\\(WinSxS|Installer|servicing|System32\\config)\\'
-$CmdByPath = '\.ost$'
+# ---------------------------------------------------------------------------
+# SAFETY PASS
+#
+# Evaluated BEFORE the knowledge base and completely independent of it. This
+# decides what may be *done* with a file; the knowledge base only ever supplies
+# wording. Nothing in $KB can promote a file out of a rule matched here, so no
+# amount of rule reordering can turn a protected file into a deletable one.
+#
+# Why it is separate: a .pst sitting under AppData\Local\Temp was classified
+# "your temp folder, SAFE" because a broad location rule matched before the
+# file-type rule. Location was overriding identity. Keeping the labelling and
+# the permission in one first-match list meant the ordering of that list was
+# load-bearing for safety, which is too fragile a place to put it.
+#
+# Entries carrying N/W/H also override the label, for cases where a file must
+# be described by what it IS wherever it happens to live. Entries with only a
+# Mode leave the description to the knowledge base, which handles them well -
+# hiberfil.sys is genuinely reclaimable, just never by deleting the file.
+# ---------------------------------------------------------------------------
+$SafetyRules = @(
+  # --- identity beats location: these carry their own description ----------
+  @{P='\.pst$'; Mode='never'; V='NEVER'; N='Outlook data file (archive)';
+    W='An Outlook personal folders file. Unlike a .ost this is frequently the ONLY copy of the mail in it - archived mail is usually not on any server.';
+    H='Back it up. Compact it via File > Account Settings > Data Files > Settings > Compact Now.'}
 
+  @{P='\.lrcat$'; Mode='never'; V='NEVER'; N='Lightroom catalogue';
+    W='Your edits, ratings, keywords and collections. Not the photos themselves, but losing it loses all your work on them.';
+    H='Back it up.'}
+
+  @{P='\\Saved Games\\|\\My Games\\'; Mode='never'; V='NEVER'; N='Game saves';
+    W='Your save files. Small, and gone forever if deleted without cloud sync.';
+    H='Leave them. If anything, back them up.'}
+
+  # --- permission only: the knowledge base describes these accurately ------
+  @{P='\\pagefile\.sys$|\\swapfile\.sys$|\\DumpStack'; Mode='never'}
+  @{P='\\System Volume Information\\';                 Mode='never'}
+  @{P='\\Windows\\(WinSxS|Installer|servicing|System32\\config)\\'; Mode='never'}
+  @{P='\.(vhd|vhdx|avhdx|vmdk|qcow2|vdi)$';            Mode='never'}
+  @{P='\\hiberfil\.sys$';                              Mode='cmd'}
+  @{P='\.ost$';                                        Mode='cmd'}
+)
+
+function Test-SafetyRule {
+    param([string]$Path)
+    foreach ($s in $SafetyRules) { if ($Path -match $s.P) { return $s } }
+    $null
+}
+
+# Only consulted for files the safety pass did not claim. These are heuristics
+# over the classification name, and they can only ever make a file LESS
+# deletable, never more.
 function Get-DeleteMode {
-    param([string]$Path, [string]$Name, [string]$Verdict)
-    if ($Verdict -eq 'NEVER')           { return 'never' }
-    if ($Path -match $NeverPlainDelete) { return 'never' }
-    if ($Path -match $CmdByPath)        { return 'cmd' }
-    if ($Name -match $CmdManaged)       { return 'cmd' }
-    if ($Name -match $AppManaged)       { return 'app' }
-    if ($Verdict -eq 'KEEP')            { return 'app' }   # something installed needs it
+    param([string]$Name, [string]$Verdict)
+    if ($Verdict -eq 'NEVER')     { return 'never' }
+    if ($Name -match $CmdManaged) { return 'cmd' }
+    if ($Name -match $AppManaged) { return 'app' }
+    if ($Verdict -eq 'KEEP')      { return 'app' }   # something installed needs it
     'file'
 }
 
 function Resolve-Entry {
     param([string]$FullPath, [bool]$IsDir)
+
+    # 1. Safety pass first, and it is authoritative for Mode.
+    $hard = Test-SafetyRule $FullPath
+
+    # 2. Knowledge base for wording.
+    $name = 'Unrecognised file'
+    if ($IsDir) { $name = 'Unrecognised folder' }
+    $verdict = 'UNKNOWN'
+    $what    = 'Not in the knowledge base, so no judgement is offered.'
+    $how     = 'Find out what owns it before deleting. Re-run with -Ollama for a best-effort local description.'
+    $known   = $false
+
     foreach ($r in $KB) {
         if ($FullPath -match $r.P) {
-            return [pscustomobject]@{
-                Name = $r.N; Verdict = $r.V; What = $r.W; How = $r.H; Known = $true
-                Mode = (Get-DeleteMode $FullPath $r.N $r.V)
-            }
+            $name = $r.N; $verdict = $r.V; $what = $r.W; $how = $r.H; $known = $true
+            break
         }
     }
-    $label = 'Unrecognised file'
-    if ($IsDir) { $label = 'Unrecognised folder' }
+
+    # 3. A safety rule carrying its own description overrides the label, so a
+    #    file is named for what it is rather than where it happens to sit.
+    if ($hard -and $hard.ContainsKey('N')) {
+        $name = $hard.N; $verdict = $hard.V; $what = $hard.W; $how = $hard.H; $known = $true
+    }
+
+    $mode = if ($hard) { $hard.Mode } else { Get-DeleteMode $name $verdict }
+
+    # 4. A file this tool will not delete must never be presented as SAFE.
+    #    Without this the mode is correct but the label still reads SAFE - so a
+    #    location rule can still *say* "safe to delete" about a protected file,
+    #    even though acting on it is blocked. Only SAFE is clamped; REVIEW and
+    #    KEEP alongside a restricted mode are coherent and are left alone.
+    if ($verdict -eq 'SAFE') {
+        if     ($mode -eq 'never') { $verdict = 'NEVER' }
+        elseif ($mode -eq 'cmd')   { $verdict = 'TOOL'  }
+    }
+
     [pscustomobject]@{
-        Name    = $label
-        Verdict = 'UNKNOWN'
-        What    = 'Not in the knowledge base, so no judgement is offered.'
-        How     = 'Find out what owns it before deleting. Re-run with -Ollama for a best-effort local description.'
-        Known   = $false
-        Mode    = (Get-DeleteMode $FullPath $label 'UNKNOWN')
+        Name = $name; Verdict = $verdict; What = $what; How = $how
+        Known = $known; Mode = $mode
     }
 }
 
@@ -810,6 +862,58 @@ $VerdictLegend = [ordered]@{
     'KEEP'    = 'Something installed needs this; deleting degrades or breaks it'
     'NEVER'   = 'Deleting breaks Windows or loses data permanently'
     'UNKNOWN' = 'Not recognised - investigate before touching'
+}
+
+# ---------------------------------------------------------------------------
+# -SelfTest : assert the safety rules against paths designed to make the
+# classification disagree with the file's identity.
+#
+# Resolve-Entry is a pure function of the path string, so none of these need to
+# exist on disk. Every case below is a path where a location rule in $KB would
+# happily claim the file - the point is that the safety pass gets there first.
+# ---------------------------------------------------------------------------
+if ($SelfTest) {
+    $T = "$env:SystemDrive\Users\someone\AppData\Local\Temp"   # the trap: a broad SAFE rule
+    # NB: hashtables, not nested arrays - PowerShell flattens @(@(),@()) into a
+    # single list of strings and the cases silently fall apart.
+    $cases = @(
+        @{Path="$T\archive.pst";          V='NEVER'; M='never'; Why='Outlook archive inside a temp folder'}
+        @{Path="$T\catalog.lrcat";        V='NEVER'; M='never'; Why='Lightroom catalogue inside a temp folder'}
+        @{Path="$T\Saved Games\slot.sav"; V='NEVER'; M='never'; Why='game save inside a temp folder'}
+        @{Path="$T\ext4.vhdx";            V='NEVER'; M='never'; Why='virtual disk in temp is not labelled SAFE'}
+        @{Path="$T\mail.ost";             V='TOOL';  M='cmd';   Why='Outlook cache in temp is not labelled SAFE'}
+        @{Path="$env:SystemDrive\pagefile.sys"; V='NEVER'; M='never'; Why='page file at the drive root'}
+        @{Path="$env:SystemDrive\hiberfil.sys";  M='cmd';   Why='hiberfil is reclaimable, but not by deletion'}
+        @{Path="$T\debug.dmp";                   M='file';  Why='an ordinary temp file is still deletable'}
+        @{Path="$T\old.log";                     M='file';  Why='an ordinary log is still deletable'}
+        @{Path="$env:SystemDrive\Program Files (x86)\Steam\steamapps\common\G\data.pak";
+                                                 M='app';   Why='game data belongs to its launcher'}
+    )
+
+    Write-Host ''
+    Write-Host '  SAFETY RULE SELF-TEST' -ForegroundColor White
+    Write-Host ('  ' + ('-' * 76)) -ForegroundColor DarkGray
+    $fail = 0
+    foreach ($c in $cases) {
+        $got = Resolve-Entry -FullPath $c.Path -IsDir $false
+        $wantV = if ($c.ContainsKey('V')) { $c.V } else { $null }
+        $okV = ($null -eq $wantV) -or ($got.Verdict -eq $wantV)
+        $okM = $got.Mode -eq $c.M
+        if ($okV -and $okM) {
+            Write-Host ('  PASS  {0,-7} {1,-6}  {2}' -f $got.Verdict, $got.Mode, $c.Why) -ForegroundColor Green
+        } else {
+            $fail++
+            $vLabel = if ($wantV) { $wantV } else { 'any' }
+            Write-Host ('  FAIL  {0,-7} {1,-6}  {2}' -f $got.Verdict, $got.Mode, $c.Why) -ForegroundColor Red
+            Write-Host ('        expected verdict {0}, mode {1}' -f $vLabel, $c.M) -ForegroundColor Red
+            Write-Host ('        path: {0}' -f $c.Path) -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ''
+    if ($fail) { Write-Host "  $fail of $($cases.Count) failed." -ForegroundColor Red; exit 1 }
+    Write-Host "  All $($cases.Count) passed." -ForegroundColor Green
+    Write-Host ''
+    return
 }
 
 # ---------------------------------------------------------------------------
@@ -1502,15 +1606,17 @@ function Invoke-CleanUp {
     foreach ($h in $held) {
         Write-Host ('  SKIPPED  {0}' -f $h.Path) -ForegroundColor DarkYellow
         Write-Host ('           {0} - {1}' -f $h.What, $actionLabel[$h.Mode]) -ForegroundColor DarkYellow
-        # If the safety list caught it by path, say so - the classification
-        # guidance may be about the folder, not about this file type.
-        if ($h.Path -match $NeverPlainDelete) {
-            Write-Host '           -> This file type is on the never-delete list regardless of' -ForegroundColor DarkCyan
-            Write-Host '              where it sits. It holds data that cannot be regenerated,' -ForegroundColor DarkCyan
-            Write-Host '              or must be shrunk/compacted rather than removed.' -ForegroundColor DarkCyan
-        } elseif ($h.Path -match $CmdByPath) {
-            Write-Host '           -> Shrink this through its own application rather than' -ForegroundColor DarkCyan
-            Write-Host '              deleting the file.' -ForegroundColor DarkCyan
+        # Say when the safety pass claimed it, since that decision is made on
+        # the path and is not what the classification guidance is talking about.
+        $rule = Test-SafetyRule $h.Path
+        if ($rule -and -not $rule.ContainsKey('N')) {
+            if ($rule.Mode -eq 'never') {
+                Write-Host '           -> Held by the safety rules regardless of classification.' -ForegroundColor DarkCyan
+                Write-Host '              This cannot be reclaimed by deleting the file.' -ForegroundColor DarkCyan
+            } else {
+                Write-Host '           -> Held by the safety rules: reclaim this with its own' -ForegroundColor DarkCyan
+                Write-Host '              command rather than by deleting the file.' -ForegroundColor DarkCyan
+            }
         } else {
             foreach ($w in (Format-Wrap $h.Guidance 61)) {
                 Write-Host ('           -> {0}' -f $w) -ForegroundColor DarkCyan
