@@ -44,9 +44,45 @@ spinner that tells you nothing:
 <img src="docs/02-scanning.png" alt="Scanning with a percentage progress bar">
 
 And the part no big-files tool shows you: the Disk Cleanup categories, which are
-thousands of small files each and so can never appear in a size-ranked list:
+thousands of small files each and so can never appear in a size-ranked list. Several of
+these can only be measured with administrator rights — see
+[Normal mode and administrator mode](#normal-mode-and-administrator-mode):
 
 <img src="docs/03-system-cleanup.png" alt="System cleanup areas">
+
+## Normal mode and administrator mode
+
+The app runs **without administrator rights by default**, deliberately — a double-click
+should never be able to quietly remove protected files. Everything that matters works in
+that mode.
+
+|  | Normal | As administrator |
+|---|---|---|
+| Finds every file on the drive | yes | yes |
+| Classification, verdicts, guidance | yes | yes |
+| Selecting and deleting files | yes | yes |
+| Recycle Bin size and access | yes | yes |
+| **Measuring protected system areas** | **no** | **yes** |
+
+The single difference is the **System cleanup** section. Windows blocks ordinary programs
+from reading several of those folders, so without elevation they report *needs admin*
+instead of a size:
+
+- Delivery Optimization cache — update chunks shared with other PCs on your LAN
+- Windows Search index — `Windows.edb`, which occasionally runs away to tens of GB
+- Defender scan history
+- Kernel telemetry dumps — `LiveKernelReports`, which grows when a driver keeps resetting
+- The system temp folder, and the prefetch folder
+
+This is not a small difference. On the machine these screenshots came from, normal mode
+could measure **458 MB** of system cleanup areas; the same scan as administrator found
+**19.1 GB** — 8.3 GB of it Delivery Optimization and 7 GB of kernel telemetry dumps,
+neither of which was visible at all beforehand.
+
+The app offers elevation when it starts, and there is a **Run as admin** button in the
+header and beside the locked rows. Choosing it restarts the app and asks Windows for
+permission, so you will need to run the scan again — which is why it asks up front rather
+than after you have waited for a scan.
 
 **The script** — same engine, no GUI.
 
