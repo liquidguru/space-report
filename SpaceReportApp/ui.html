@@ -256,7 +256,7 @@ if (!window.chrome || !window.chrome.webview) {
 }
 
 var FILES = [], FOLDERS = [], SYSTEM = [], SELECTED = {}, TYPEFILTER = null, VFILTER = null, BUSY = false;
-var ELEVATED = false, SYSVIEW = false;
+var ELEVATED = false, SYSVIEW = false, AUTOVIEW = null;
 var VORDER = ['SAFE','TOOL','REVIEW','UNKNOWN','KEEP','NEVER'];
 var VCOLOR = {SAFE:'var(--safe)',TOOL:'var(--tool)',REVIEW:'var(--review)',
               KEEP:'var(--keep)',NEVER:'var(--never)',UNKNOWN:'var(--unknown)'};
@@ -298,7 +298,18 @@ function onReady(m){
     // Offer elevation once, up front, since the difference is large (hundreds of
     // MB versus tens of GB) and it cannot be applied retrospectively - elevating
     // restarts the app. The preference comes from the host, not localStorage.
-    if (!m.skipAdminPrompt) el('adminscrim').className = 'scrim on';
+    if (!m.skipAdminPrompt && !m.auto) el('adminscrim').className = 'scrim on';
+  }
+
+  // --scan on the command line: fill the controls in and go.
+  if (m.auto && m.auto.path){
+    AUTOVIEW = m.auto.view || null;
+    var sel = el('drive');
+    for (var i=0;i<sel.options.length;i++){
+      if (sel.options[i].value.toLowerCase() === m.auto.path.toLowerCase()) sel.selectedIndex=i;
+    }
+    if (m.auto.minMB) el('minmb').value = m.auto.minMB;
+    setTimeout(function(){ el('scan').click(); }, 150);
   }
   if (!m.scriptFound){
     el('main').innerHTML = '<div class="state"><h2>Get-SpaceReport.ps1 is missing</h2>'+
@@ -363,7 +374,16 @@ function onScan(d){
   el('dleft').textContent = d.Drive+'  '+pct+'% used';
   el('dright').textContent = fmt(d.DriveFree)+' free of '+fmt(d.DriveSize)+
                              '  ·  '+Number(d.FileCount).toLocaleString()+' files scanned';
+
+  // Honour --view from the command line, then signal completion in the window
+  // title so an external capture script knows the results are on screen.
+  if(AUTOVIEW){
+    if(AUTOVIEW.toLowerCase()==='system') SYSVIEW=true;
+    else VFILTER=AUTOVIEW.toUpperCase();
+    AUTOVIEW=null;
+  }
   render();
+  post({cmd:'title', text:'Space Report — ready'});
 }
 
 /* ---------- rendering ---------- */

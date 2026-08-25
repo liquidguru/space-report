@@ -11,8 +11,8 @@
         HOW         - the correct way to reclaim it, if there is one
 
     Anything the built-in knowledge base does not recognise can optionally be
-    sent to local Ollama via delegate.py for a best-effort description, so it
-    costs no Claude tokens.
+    sent to a local Ollama model for a best-effort description, so nothing about
+    your filesystem leaves the machine.
 
     By default it only reads and reports. -Clean opens a tick-box picker of the
     files it found so you can delete a selection; see the DELETING section.

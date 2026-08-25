@@ -34,17 +34,19 @@ guessed at.
 
 **The app** — pick a drive, scan, tick, delete.
 
-```
-                    37%
-   ████████████████░░░░░░░░░░░░░░░░░░░░░░░
-        412,883 files · 263.6 GB
+Filter to everything marked SAFE and take the lot in one click:
 
-[ All 22 ] [● SAFE 4 · 8.0 GB] [● TOOL 1 · 12.8 GB] [● REVIEW 3 · 31.6 GB]
+<img src="docs/01-safe-files.png" alt="The SAFE filter, with select-all">
 
-  ☑  2.4 GB  SAFE   C:\Users\...\pip\cache\a.body      can delete
-  🔒 12.8 GB  TOOL   C:\hiberfil.sys                   needs a command
-  🔒 13.1 GB  REVIEW C:\...\steamapps\common\...       uninstall via app
-```
+Progress is a real percentage — bytes scanned against the drive's used space — not a
+spinner that tells you nothing:
+
+<img src="docs/02-scanning.png" alt="Scanning with a percentage progress bar">
+
+And the part no big-files tool shows you: the Disk Cleanup categories, which are
+thousands of small files each and so can never appear in a size-ranked list:
+
+<img src="docs/03-system-cleanup.png" alt="System cleanup areas">
 
 **The script** — same engine, no GUI.
 
@@ -88,10 +90,18 @@ Everything else:
 
 ## Install
 
-**App** — grab the release, unzip, run `SpaceReport.exe`.
+**App** — download `SpaceReport.exe` from [Releases](../../releases) and run it. One file,
+nothing to unzip, no .NET install needed. It unpacks its own working files to
+`%LOCALAPPDATA%\SpaceReport` on first run.
 
 > Windows will show *"Windows protected your PC"* on first run because the executable is
 > unsigned. **More info → Run anyway.** Code signing needs a paid certificate.
+
+Optional arguments, if you want a shortcut that goes straight to a scan:
+
+```
+SpaceReport.exe --scan C:\ --min 500 --view system
+```
 
 **Script** — PowerShell 7 (`pwsh`) or Windows PowerShell 5.1. No modules needed.
 
@@ -104,15 +114,18 @@ Requires the .NET 8 SDK and the [WebView2 runtime](https://developer.microsoft.c
 cd SpaceReportApp
 dotnet build -c Release
 
-# Or a self-contained exe that needs no .NET install:
+# The single-file release build:
 dotnet publish -c Release -r win-x64 --self-contained `
   -p:PublishSingleFile=true -o ..\publish
 ```
 
-`Get-SpaceReport.ps1` is copied next to the executable automatically — the app will not
-run without it.
+`ui.html` and `Get-SpaceReport.ps1` are both embedded in the executable *and* copied next
+to it. The app prefers the loose copies when they exist, so editing either and rebuilding
+takes effect immediately; a published single-file build has neither, so it unpacks the
+embedded ones instead.
 
-To regenerate the icon after changing it: `pwsh -File SpaceReportApp\make-icon.ps1`
+To regenerate the icon: `pwsh -File SpaceReportApp\make-icon.ps1`
+To regenerate the screenshots: `pwsh -File capture-screenshots.ps1`
 
 ## How it works
 

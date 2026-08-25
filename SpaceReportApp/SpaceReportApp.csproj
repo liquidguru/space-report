@@ -10,6 +10,16 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Version>1.0.0</Version>
+
+    <!-- Single-file publish: bundle the native libraries too (WebView2Loader and
+         the WPF natives), compress the payload, and leave out symbols and the
+         dependency XML docs so the download is one clean executable. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
     <Product>Space Report</Product>
     <Description>Shows what is using disk space, what each item is, and whether it can safely be deleted.</Description>
   </PropertyGroup>
@@ -25,9 +35,16 @@
 
 
   <ItemGroup>
-    <!-- The UI, and the engine it drives. Both copied next to the exe. -->
-    <None Update="ui.html" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\Get-SpaceReport.ps1" Link="Get-SpaceReport.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The UI, and the engine it drives.
+         Embedded so that a published single-file build really is one file, and
+         also copied next to the exe so ordinary `dotnet build` runs pick up
+         edits without a republish. The app prefers the loose copies when they
+         exist and unpacks the embedded ones otherwise. -->
+    <EmbeddedResource Include="ui.html" LogicalName="ui.html"
+                      CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="..\Get-SpaceReport.ps1" Link="Get-SpaceReport.ps1"
+                      LogicalName="Get-SpaceReport.ps1"
+                      CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

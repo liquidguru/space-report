@@ -56,11 +56,82 @@ namespace SpaceReportApp
             catch { }
         }
 
+        private string _uiPath;
+
         public MainWindow()
         {
             InitializeComponent();
-            _scriptPath = Path.Combine(AppContext.BaseDirectory, "Get-SpaceReport.ps1");
+            PrepareRuntimeFiles();
             Loaded += OnLoaded;
+        }
+
+        /// <summary>
+        /// Locates ui.html and Get-SpaceReport.ps1.
+        ///
+        /// A normal build copies both next to the exe; those are preferred so that
+        /// editing either one and rebuilding takes effect immediately. A published
+        /// single-file build has no loose files, so the embedded copies are
+        /// unpacked into LocalAppData instead - which is what lets the download be
+        /// a single executable rather than a folder people must keep together.
+        /// </summary>
+        private void PrepareRuntimeFiles()
+        {
+            string beside = AppContext.BaseDirectory;
+            string localScript = Path.Combine(beside, "Get-SpaceReport.ps1");
+            string localUi     = Path.Combine(beside, "ui.html");
+            if (File.Exists(localScript) && File.Exists(localUi))
+            {
+                _scriptPath = localScript;
+                _uiPath     = localUi;
+                return;
+            }
+
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SpaceReport", "runtime");
+            Directory.CreateDirectory(dir);
+            _scriptPath = Unpack("Get-SpaceReport.ps1", dir) ?? localScript;
+            _uiPath     = Unpack("ui.html", dir) ?? localUi;
+        }
+
+        /// <summary>
+        /// Writes an embedded resource to disk, skipping the write when the file
+        /// is already byte-identical. That keeps upgrades correct while avoiding a
+        /// write on every launch - and avoids fighting a second running instance
+        /// over the same file.
+        /// </summary>
+        private static string Unpack(string resourceName, string dir)
+        {
+            string target = Path.Combine(dir, resourceName);
+            try
+            {
+                var asm = typeof(MainWindow).Assembly;
+                using var src = asm.GetManifestResourceStream(resourceName);
+                if (src == null) return null;
+
+                using var ms = new MemoryStream();
+                src.CopyTo(ms);
+                byte[] wanted = ms.ToArray();
+
+                if (File.Exists(target))
+                {
+                    try
+                    {
+                        byte[] have = File.ReadAllBytes(target);
+                        if (have.Length == wanted.Length &&
+                            have.AsSpan().SequenceEqual(wanted)) return target;
+                    }
+                    catch { }
+                }
+
+                File.WriteAllBytes(target, wanted);
+                return target;
+            }
+            catch
+            {
+                // If it is already there from a previous run, use it rather than failing.
+                return File.Exists(target) ? target : null;
+            }
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -87,14 +158,14 @@ namespace SpaceReportApp
             Web.CoreWebView2.WebMessageReceived += OnWebMessage;
             Web.CoreWebView2.NewWindowRequested += (o, a) => a.Handled = true;
 
-            string ui = Path.Combine(AppContext.BaseDirectory, "ui.html");
-            if (!File.Exists(ui))
+            if (string.IsNullOrEmpty(_uiPath) || !File.Exists(_uiPath))
             {
-                MessageBox.Show("ui.html is missing from " + AppContext.BaseDirectory,
+                MessageBox.Show("The user interface could not be unpacked.\n\nExpected: " +
+                    (_uiPath ?? "(not resolved)"),
                     "Space Report", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
-            Web.CoreWebView2.Navigate(new Uri(ui).AbsoluteUri);
+            Web.CoreWebView2.Navigate(new Uri(_uiPath).AbsoluteUri);
 
             Web.CoreWebView2.DOMContentLoaded += async (o, a) =>
             {
@@ -102,7 +173,8 @@ namespace SpaceReportApp
                                       elevated = IsElevated(),
                                       skipAdminPrompt = GetSkipAdminPrompt(),
                                       script = _scriptPath,
-                                      scriptFound = File.Exists(_scriptPath) });
+                                      scriptFound = File.Exists(_scriptPath),
+                                      auto = ReadAutoScanArgs() });
                 await SendDrivesAsync();
             };
             }
@@ -157,6 +229,33 @@ namespace SpaceReportApp
                     { UseShellExecute = true });
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Optional launch arguments, so a scan can be started without clicking:
+        ///     SpaceReport.exe --scan C:\ --min 500 --view system
+        /// --view accepts "system" or a verdict such as SAFE. Used for capturing
+        /// documentation screenshots, and handy for a shortcut that always scans
+        /// the same drive.
+        /// </summary>
+        private static object ReadAutoScanArgs()
+        {
+            try
+            {
+                var a = Environment.GetCommandLineArgs();
+                string path = null, view = null;
+                int min = 500;
+                for (int i = 1; i < a.Length - 1; i++)
+                {
+                    if (a[i].Equals("--scan", StringComparison.OrdinalIgnoreCase)) path = a[i + 1];
+                    else if (a[i].Equals("--min", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(a[i + 1], out min);
+                    else if (a[i].Equals("--view", StringComparison.OrdinalIgnoreCase)) view = a[i + 1];
+                }
+                if (path == null) return null;
+                return new { path, minMB = min, view };
+            }
+            catch { return null; }
         }
 
         private static bool IsElevated()
@@ -235,6 +334,15 @@ namespace SpaceReportApp
                 case "setskipadmin":
                     SetSkipAdminPrompt(msg.TryGetProperty("value", out var sv) &&
                                        sv.ValueKind == JsonValueKind.True);
+                    break;
+                case "title":
+                    // Lets an external script tell when a scan has finished,
+                    // by watching the window title rather than guessing a delay.
+                    if (msg.TryGetProperty("text", out var tt) && tt.ValueKind == JsonValueKind.String)
+                    {
+                        string t = tt.GetString();
+                        await Dispatcher.InvokeAsync(() => Title = t);
+                    }
                     break;
                 case "reveal": Reveal(msg);              break;
                 case "elevate": Elevate();               break;
