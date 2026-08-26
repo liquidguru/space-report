@@ -98,6 +98,7 @@ param(
     [string]$Json,
     [switch]$Clean,
     [string[]]$Paths,
+    [string]$PathsFile,
     [string]$Select,
     [switch]$Permanent,
     [switch]$IncludeRisky,
@@ -106,6 +107,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# -PathsFile: one path per line. This exists because passing several paths to
+# -Paths across a process boundary does not work. PowerShell binds only the
+# first value after -Paths to the array; the rest land on positional parameters,
+# so two files silently deleted one and three failed with a type-conversion
+# error on -Top. A file has no delimiter or quoting problems at all.
+if ($PathsFile) {
+    if (-not (Test-Path -LiteralPath $PathsFile -PathType Leaf)) {
+        throw "PathsFile not found: $PathsFile"
+    }
+    $Paths = @(Get-Content -LiteralPath $PathsFile -Encoding UTF8 |
+               Where-Object { $_.Trim() -ne '' })
+}
 
 # ---------------------------------------------------------------------------
 # Knowledge base. First match wins, so specific patterns come before general.

@@ -465,21 +465,33 @@ namespace SpaceReportApp
                 string outFile = Path.Combine(Path.GetTempPath(),
                     "spacereport-del-" + Guid.NewGuid().ToString("N") + ".json");
 
+                // The selection goes in a file, one path per line, NOT as repeated
+                // arguments. PowerShell binds only the first value after -Paths to
+                // the array parameter and lets the rest fall onto positional ones,
+                // which silently deleted a single file when two were selected and
+                // failed outright with three. A file also sidesteps every quoting
+                // and delimiter question.
+                string listFile = Path.Combine(Path.GetTempPath(),
+                    "spacereport-sel-" + Guid.NewGuid().ToString("N") + ".txt");
+                var selected = new System.Collections.Generic.List<string>();
+                foreach (var el in arr.EnumerateArray())
+                {
+                    string v = el.GetString();
+                    if (!string.IsNullOrWhiteSpace(v)) selected.Add(v);
+                }
+                File.WriteAllLines(listFile, selected, new UTF8Encoding(false));
+
                 var args = new System.Collections.Generic.List<string>();
                 // -Force skips the script's own typed confirmation because the app
                 // has already shown its own. Every other rail still applies: the
                 // script re-classifies each path and refuses what it must.
                 args.Add("-Force");
                 if (permanent) args.Add("-Permanent");
-                args.Add("-Json"); args.Add(outFile);
-                args.Add("-Paths");
-                foreach (var el in arr.EnumerateArray())
-                {
-                    string v = el.GetString();
-                    if (!string.IsNullOrWhiteSpace(v)) args.Add(v);
-                }
+                args.Add("-Json");      args.Add(outFile);
+                args.Add("-PathsFile"); args.Add(listFile);
 
                 var (ok, err) = await RunScriptAsync(args.ToArray());
+                try { File.Delete(listFile); } catch { }
 
                 if (!File.Exists(outFile))
                 {
@@ -547,7 +559,11 @@ namespace SpaceReportApp
             proc.BeginErrorReadLine();
             await Task.Run(() => proc.WaitForExit());
 
-            return (proc.ExitCode == 0, stderr.ToString().Trim());
+            // PowerShell colours its error output, and those escape sequences show
+            // up as literal gibberish once the text reaches the HTML UI.
+            string err = System.Text.RegularExpressions.Regex.Replace(
+                stderr.ToString(), @"\x1B\[[0-9;]*[a-zA-Z]", string.Empty).Trim();
+            return (proc.ExitCode == 0, err);
         }
 
         private static string ResolveShell()
