@@ -99,6 +99,8 @@ param(
     [switch]$Clean,
     [string[]]$Paths,
     [string]$PathsFile,
+    [ValidateSet('DeliveryOptimization')]
+    [string]$RunCleanup,
     [string]$Select,
     [switch]$Permanent,
     [switch]$IncludeRisky,
@@ -912,6 +914,69 @@ $VerdictLegend = [ordered]@{
 # exist on disk. Every case below is a path where a location rule in $KB would
 # happily claim the file - the point is that the safety pass gets there first.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# -RunCleanup : invoke a SUPPORTED Windows cleanup for a system area.
+#
+# This is deliberately not file deletion. System areas are never removed file by
+# file by this tool - a running service may own them. Instead the area's own
+# cleanup mechanism is asked to do it, exactly as Disk Cleanup would, and the
+# folder is measured before and after so the result is reported honestly.
+#
+# Only actions in the ValidateSet on the parameter can reach here.
+# ---------------------------------------------------------------------------
+if ($RunCleanup) {
+    $result = [ordered]@{ Action = $RunCleanup; Before = -1L; After = -1L; Freed = 0L; Error = $null }
+
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+             ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    $measure = {
+        param([string[]]$Dirs)
+        $t = 0L; $any = $false
+        foreach ($d in $Dirs) {
+            if (Test-Path -LiteralPath $d -ErrorAction SilentlyContinue) {
+                $w = [SpaceWalker2]::new(); $w.MinFileBytes = [long]::MaxValue
+                $t += $w.Walk($d); $any = $true
+            }
+        }
+        if ($any) { $t } else { -1L }
+    }
+
+    try {
+        if (-not $admin) { throw 'This needs administrator rights. Use Run as admin and try again.' }
+
+        switch ($RunCleanup) {
+            'DeliveryOptimization' {
+                $dirs = @(
+                    "$env:SystemRoot\SoftwareDistribution\DeliveryOptimization"
+                    "$env:SystemRoot\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization"
+                )
+                $result.Before = & $measure $dirs
+                # Without -IncludePinnedFiles: pinned content is what Delivery
+                # Optimization is deliberately keeping, and Disk Cleanup leaves
+                # it too.
+                Delete-DeliveryOptimizationCache -Force -ErrorAction Stop
+                $result.After = & $measure $dirs
+            }
+        }
+        if ($result.Before -ge 0 -and $result.After -ge 0) {
+            $result.Freed = [math]::Max(0L, $result.Before - $result.After)
+        }
+    } catch {
+        $result.Error = $_.Exception.Message
+    }
+
+    if ($Json) { $result | ConvertTo-Json | Set-Content -LiteralPath $Json -Encoding UTF8 }
+    if ($result.Error) {
+        Write-Host "  $RunCleanup cleanup failed: $($result.Error)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host ("  {0}: freed {1}  ({2} -> {3})" -f $RunCleanup,
+        (Format-Size $result.Freed).Trim(), (Format-Size $result.Before).Trim(),
+        (Format-Size $result.After).Trim()) -ForegroundColor Green
+    return
+}
+
 if ($SelfTest) {
     $T = "$env:SystemDrive\Users\someone\AppData\Local\Temp"   # the trap: a broad SAFE rule
     # NB: hashtables, not nested arrays - PowerShell flattens @(@(),@()) into a
@@ -1098,10 +1163,10 @@ $SystemAreas = @(
   @{N='Windows Update cache'; P="$env:SystemRoot\SoftwareDistribution\Download"; V='TOOL';
     W='Update payloads already downloaded, and usually already installed.';
     H='Disk Cleanup > Windows Update Cleanup. Or: net stop wuauserv, empty the folder, net start wuauserv.'}
-  @{N='Delivery Optimization files'; P="$env:SystemRoot\SoftwareDistribution\DeliveryOptimization"; V='SAFE';
+  @{N='Delivery Optimization files'; Act='DeliveryOptimization'; P="$env:SystemRoot\SoftwareDistribution\DeliveryOptimization"; V='SAFE';
     W='Update chunks cached so other PCs on your LAN can pull them from you rather than from Microsoft.';
     H='Disk Cleanup > Delivery Optimization Files. Or Settings > Windows Update > Advanced > Delivery Optimization.'}
-  @{N='Delivery Optimization cache'; P="$env:SystemRoot\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization"; V='SAFE';
+  @{N='Delivery Optimization cache'; Act='DeliveryOptimization'; P="$env:SystemRoot\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization"; V='SAFE';
     W='The other location Delivery Optimization uses. Same purpose, same disposability.';
     H='Disk Cleanup > Delivery Optimization Files.'}
   @{N='Previous Windows installation'; P="$sysDrive\Windows.old"; V='TOOL';
@@ -1162,6 +1227,8 @@ $sysResults = foreach ($a in $SystemAreas) {
         # Always 'cmd': these are folders with a proper reclaim route. The tool
         # will not delete them file by file.
         Mode = 'cmd'
+        # A supported Windows cleanup the app may invoke for this area, if any.
+        Action = $(if ($a.ContainsKey('Act')) { $a.Act } else { $null })
     }
 }
 $sysResults = @($sysResults | Sort-Object { if ($_.Bytes -lt 0) { -1 } else { $_.Bytes } } -Descending)
@@ -1353,7 +1420,7 @@ if ($Json) {
         DriveFree = $dFree
         Files     = @($allFiles  | Select-Object Path,Bytes,Name,Verdict,What,How,Mode)
         Folders   = @($folders   | Select-Object Path,Bytes,Name,Verdict,What,How,Mode)
-        System    = @($sysResults | Select-Object Path,Bytes,Name,Verdict,What,How,Mode)
+        System    = @($sysResults | Select-Object Path,Bytes,Name,Verdict,What,How,Mode,Action)
     }
     $payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Json -Encoding UTF8
     Write-Host "  JSON written to $Json" -ForegroundColor DarkGray

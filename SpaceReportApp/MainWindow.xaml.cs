@@ -333,6 +333,7 @@ namespace SpaceReportApp
                 case "delete": await DoDeleteAsync(msg); break;
                 case "drives": await SendDrivesAsync();  break;
                 case "recycle": await SendRecycleAsync(); break;
+                case "cleansys": await DoCleanSystemAsync(msg); break;
                 case "openrecycle":
                     OpenRecycleBin();
                     await SendRecycleAsync();
@@ -448,6 +449,48 @@ namespace SpaceReportApp
             catch (Exception ex)
             {
                 await SendAsync(new { type = "error", stage = "scan", message = ex.Message });
+            }
+            finally { _busy = false; }
+        }
+
+        // Mirrors the script's ValidateSet. Checked here too so the page can never
+        // pass an arbitrary string through to the script, whatever it sends.
+        private static readonly string[] AllowedCleanups = { "DeliveryOptimization" };
+
+        private async Task DoCleanSystemAsync(JsonElement msg)
+        {
+            if (_busy) return;
+            _busy = true;
+            try
+            {
+                string action = msg.TryGetProperty("action", out var a) && a.ValueKind == JsonValueKind.String
+                              ? a.GetString() : null;
+                if (Array.IndexOf(AllowedCleanups, action) < 0)
+                {
+                    await SendAsync(new { type = "error", stage = "cleanup", message = "Unknown cleanup action." });
+                    return;
+                }
+
+                string outFile = Path.Combine(Path.GetTempPath(),
+                    "spacereport-clean-" + Guid.NewGuid().ToString("N") + ".json");
+
+                var (ok, err) = await RunScriptAsync(new[] { "-RunCleanup", action, "-Json", outFile });
+
+                if (!File.Exists(outFile))
+                {
+                    await SendAsync(new { type = "error", stage = "cleanup",
+                                          message = string.IsNullOrWhiteSpace(err) ? "The cleanup produced no result." : err });
+                    return;
+                }
+                string json = File.ReadAllText(outFile, Encoding.UTF8);
+                try { File.Delete(outFile); } catch { }
+
+                await SendAsync(new { type = "cleaned", data = JsonSerializer.Deserialize<JsonElement>(json) });
+                await SendDrivesAsync();
+            }
+            catch (Exception ex)
+            {
+                await SendAsync(new { type = "error", stage = "cleanup", message = ex.Message });
             }
             finally { _busy = false; }
         }

@@ -150,6 +150,7 @@ label.perm{display:flex;align-items:center;gap:.4rem;color:var(--dim);font-size:
   background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.3rem .35rem .3rem .7rem}
 .binbox.full{border-color:#8a6a1288;color:var(--review)}
 .binbox button{padding:.3rem .6rem;font-size:11px}
+.cleanbtn{display:block;margin:.45rem 0 0 auto;padding:.32rem .75rem;font-size:11.5px}
 
 /* ---------- modal ---------- */
 .scrim{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;
@@ -256,7 +257,7 @@ if (!window.chrome || !window.chrome.webview) {
 }
 
 var FILES = [], FOLDERS = [], SYSTEM = [], SELECTED = {}, TYPEFILTER = null, VFILTER = null, BUSY = false;
-var ELEVATED = false, SYSVIEW = false, AUTOVIEW = null;
+var ELEVATED = false, SYSVIEW = false, AUTOVIEW = null, PENDING_CLEAN = null;
 var VORDER = ['SAFE','TOOL','REVIEW','UNKNOWN','KEEP','NEVER'];
 var VCOLOR = {SAFE:'var(--safe)',TOOL:'var(--tool)',REVIEW:'var(--review)',
               KEEP:'var(--keep)',NEVER:'var(--never)',UNKNOWN:'var(--unknown)'};
@@ -287,6 +288,7 @@ window.chrome.webview.addEventListener('message', function(e){
   if (m.type === 'progress') onProgress(m);
   if (m.type === 'scan')    onScan(m.data);
   if (m.type === 'deleted') onDeleted(m.data);
+  if (m.type === 'cleaned') onCleaned(m.data);
   if (m.type === 'error')   onError(m);
 });
 
@@ -331,7 +333,8 @@ function onDrives(ds){
 
 function onError(m){
   BUSY=false; el('scan').disabled=false;
-  el('main').innerHTML='<div class="state"><h2>'+esc(m.stage==='scan'?'Scan failed':'Delete failed')+
+  var title={scan:'Scan failed',cleanup:'Clean up failed'}[m.stage]||'Delete failed';
+  el('main').innerHTML='<div class="state"><h2>'+esc(title)+
     '</h2><div>'+esc(m.message||'Unknown error')+'</div></div>';
 }
 
@@ -399,7 +402,9 @@ function typeGroups(){
 }
 
 function render(){
-  if(!FILES.length){
+  // Only give up when there is nothing at all. System areas don't depend on the
+  // size threshold, so "no big files" must not hide them.
+  if(!FILES.length && !SYSTEM.length){
     el('main').innerHTML='<div class="state"><h2>Nothing that big</h2>'+
       '<div>No files over '+esc(el('minmb').value)+' MB. Try a smaller threshold.</div></div>';
     return;
@@ -549,9 +554,22 @@ function systemHtml(verdict){
              ' style="color:var(--review);font-size:.78rem" title="Windows blocks ordinary'+
              ' programs from reading this folder. Restart the app as administrator to see its size."':'')+'>'+
            (unknown?'needs admin':fmt(s.Bytes))+'</div>'+
-         '<span class="pill p-'+s.Verdict+'">'+s.Verdict+'</span></div></div>';
+         '<span class="pill p-'+s.Verdict+'">'+s.Verdict+'</span>'+
+         cleanButton(s)+'</div></div>';
     });
     return h;
+}
+
+// A system area with a supported Windows cleanup gets a button that asks
+// Windows to do it. Needs admin, so it is disabled - with the reason - otherwise.
+function cleanButton(s){
+  if(!s.Action) return '';
+  if(Number(s.Bytes)===0) return '';
+  if(!ELEVATED)
+    return '<button class="ghost cleanbtn" disabled title="Needs administrator rights - use Run as admin">'+
+           'Clean up</button>';
+  return '<button class="cleanbtn" data-act="'+esc(s.Action)+'" data-name="'+esc(s.Name)+
+         '" data-b="'+Number(s.Bytes)+'">Clean up</button>';
 }
 
 /* ---------- interaction ---------- */
@@ -559,6 +577,23 @@ el('main').addEventListener('click', function(e){
   var t=e.target;
 
   if(t.id==='elevhere'){ post({cmd:'elevate'}); return; }
+
+  if(t.classList.contains('cleanbtn') && !t.disabled){
+    var b=Number(t.getAttribute('data-b'));
+    PENDING_CLEAN=t.getAttribute('data-act');
+    el('mtitle').textContent='Clean up '+t.getAttribute('data-name')+'?';
+    el('mbody').innerHTML='<div class="sub" style="color:var(--dim)">About '+fmt(b)+
+      ' &mdash; Windows&rsquo; own cleanup decides exactly what goes.</div>';
+    el('mlist').innerHTML='<div class="mrow"><span>This runs Windows&rsquo; supported cleanup '+
+      '(the same as Disk Cleanup &rsaquo; Delivery Optimization Files). Space Report does not '+
+      'delete these files itself. Content Windows has pinned is kept.</span></div>';
+    el('mwarn').innerHTML='<div class="warn" style="background:#3ab7d822;border-color:#3ab7d855;color:#a9e4f0">'+
+      'This does not go to the Recycle Bin, but it is only a download cache &mdash; anything '+
+      'Windows needs again is simply downloaded again.</div>';
+    el('mok').textContent='Clean up';
+    el('scrim').className='scrim on';
+    return;
+  }
 
   if(t.id==='selall'){
     var list=FILES.filter(function(f){
@@ -606,6 +641,7 @@ el('clear').onclick=function(){ SELECTED={}; render(); syncFoot(); };
 
 /* ---------- confirm + delete ---------- */
 el('del').onclick=function(){
+  PENDING_CLEAN=null; el('mok').textContent='Delete';
   var s=selectedFiles(); if(!s.length) return;
   var b=s.reduce(function(a,f){return a+Number(f.Bytes)},0), perm=el('perm').checked;
   el('mtitle').textContent = perm?'Delete permanently?':'Move to the Recycle Bin?';
@@ -619,8 +655,18 @@ el('del').onclick=function(){
       'Recoverable from the Recycle Bin. Note the space is not actually freed until you empty it.</div>';
   el('scrim').className='scrim on';
 };
-el('mcancel').onclick=function(){ el('scrim').className='scrim'; };
+el('mcancel').onclick=function(){ PENDING_CLEAN=null; el('mok').textContent='Delete'; el('scrim').className='scrim'; };
 el('mok').onclick=function(){
+  // One dialog serves two jobs; PENDING_CLEAN says which one was confirmed.
+  if(PENDING_CLEAN){
+    var act=PENDING_CLEAN; PENDING_CLEAN=null;
+    el('mok').textContent='Delete'; el('scrim').className='scrim';
+    el('main').innerHTML='<div class="state"><div class="spin"></div><h2>Asking Windows to clean up</h2>'+
+      '<div>This can take a minute.</div></div>';
+    BUSY=true;
+    post({cmd:'cleansys', action:act});
+    return;
+  }
   var s=selectedFiles(); el('scrim').className='scrim';
   el('main').innerHTML='<div class="state"><div class="spin"></div><h2>Removing '+s.length+' file'+
     (s.length>1?'s':'')+'</h2></div>';
@@ -649,6 +695,24 @@ el('adminyes').onclick = function(){ closeAdminPrompt(); post({cmd:'elevate'}); 
 // rather than the first time a button is pressed.
 post({cmd:'drives'});
 post({cmd:'recycle'});
+
+function onCleaned(r){
+  BUSY=false;
+  if(r.Error){ onError({stage:'cleanup', message:r.Error}); return; }
+  // Re-measured by the script, so the row now shows what is really left.
+  var first=true;
+  SYSTEM.forEach(function(s){
+    if(s.Action===r.Action && Number(s.Bytes)>=0){
+      s.Bytes = first ? Math.max(0,Number(r.After)) : 0; first=false;
+    }
+  });
+  render();
+  var note='<div class="notice" style="border-color:#1f7a3d88;background:#1f7a3d18"><div>'+
+    '<b style="color:var(--safe)">Freed '+fmt(r.Freed)+'</b> &mdash; '+fmt(r.Before)+' before, '+
+    fmt(r.After)+' now. Anything left is content Windows has pinned and chose to keep.</div></div>';
+  el('main').insertAdjacentHTML('afterbegin', note);
+  el('main').scrollTop=0;
+}
 
 function onDeleted(r){
   BUSY=false;
