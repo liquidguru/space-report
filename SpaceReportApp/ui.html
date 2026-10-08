@@ -257,7 +257,7 @@ if (!window.chrome || !window.chrome.webview) {
 }
 
 var FILES = [], FOLDERS = [], SYSTEM = [], SELECTED = {}, TYPEFILTER = null, VFILTER = null, BUSY = false;
-var ELEVATED = false, SYSVIEW = false, AUTOVIEW = null, PENDING_CLEAN = null;
+var ELEVATED = false, SYSVIEW = false, AUTOVIEW = null, PENDING_CLEAN = null, LASTSCAN = null;
 var VORDER = ['SAFE','TOOL','REVIEW','UNKNOWN','KEEP','NEVER'];
 var VCOLOR = {SAFE:'var(--safe)',TOOL:'var(--tool)',REVIEW:'var(--review)',
               KEEP:'var(--keep)',NEVER:'var(--never)',UNKNOWN:'var(--unknown)'};
@@ -322,13 +322,29 @@ function onReady(m){
 }
 
 function onDrives(ds){
-  var s = el('drive'); s.innerHTML='';
+  // This runs again every time the window regains focus, so keep whatever drive
+  // was selected - rebuilding the list would otherwise snap it back to C:.
+  var s = el('drive'), keep = s.value; s.innerHTML='';
   (ds||[]).forEach(function(d){
     var o=document.createElement('option'); o.value=d.name;
     o.textContent = d.name.replace('\\','') + '  ' + (d.label===d.name?'':d.label+'  ') +
                     '(' + fmt(d.free) + ' free of ' + fmt(d.size) + ')';
     s.appendChild(o);
+    // Keep the bar for the scanned drive current, e.g. after emptying the bin.
+    if (LASTSCAN && d.name.toUpperCase().indexOf(LASTSCAN.drive.toUpperCase())===0)
+      paintDrive(d.size, d.free);
   });
+  if (keep) s.value = keep;
+}
+
+function paintDrive(size, free){
+  var used=size-free, pct=size?Math.round(used/size*100):0;
+  el('dstrip').className='drive on';
+  el('dfill').style.width=pct+'%';
+  el('dfill').style.background = pct>=90?'var(--never)':(pct>=75?'var(--review)':'var(--safe)');
+  el('dleft').textContent = LASTSCAN.drive+'  '+pct+'% used';
+  el('dright').textContent = fmt(free)+' free of '+fmt(size)+
+                             '  ·  '+Number(LASTSCAN.files).toLocaleString()+' files scanned';
 }
 
 function onError(m){
@@ -371,13 +387,8 @@ el('elevbtn').onclick = function(){ post({cmd:'elevate'}); };
 function onScan(d){
   BUSY=false; el('scan').disabled=false;
   FILES = d.Files||[]; FOLDERS = d.Folders||[]; SYSTEM = d.System||[];
-  var used = d.DriveSize - d.DriveFree, pct = d.DriveSize? Math.round(used/d.DriveSize*100):0;
-  el('dstrip').className='drive on';
-  el('dfill').style.width=pct+'%';
-  el('dfill').style.background = pct>=90?'var(--never)':(pct>=75?'var(--review)':'var(--safe)');
-  el('dleft').textContent = d.Drive+'  '+pct+'% used';
-  el('dright').textContent = fmt(d.DriveFree)+' free of '+fmt(d.DriveSize)+
-                             '  ·  '+Number(d.FileCount).toLocaleString()+' files scanned';
+  LASTSCAN = {drive:d.Drive, files:d.FileCount};
+  paintDrive(d.DriveSize, d.DriveFree);
 
   // Honour --view from the command line, then signal completion in the window
   // title so an external capture script knows the results are on screen.

@@ -63,6 +63,16 @@ namespace SpaceReportApp
             InitializeComponent();
             PrepareRuntimeFiles();
             Loaded += OnLoaded;
+
+            // Re-read the Recycle Bin and free space whenever the window regains
+            // focus. Emptying the bin happens in Explorer, outside the app, so
+            // without this the footer kept showing 14.3 GB after it was emptied.
+            Activated += async (s, e) =>
+            {
+                if (Web.CoreWebView2 == null) return;
+                await SendRecycleAsync();
+                await SendDrivesAsync();
+            };
         }
 
         /// <summary>
