@@ -173,7 +173,7 @@ label.perm{display:flex;align-items:center;gap:.4rem;color:var(--dim);font-size:
 
 <header>
   <div class="titlerow">
-    <h1>Space Report</h1>
+    <h1>Space Report <span id="ver" style="font-size:11px;font-weight:500;color:var(--faint);margin-left:.15rem"></span></h1>
     <span class="sub">what is using your disk, and what is safe to remove</span>
     <span class="badge" id="elev">standard</span>
   </div>
@@ -291,6 +291,7 @@ window.chrome.webview.addEventListener('message', function(e){
 });
 
 function onReady(m){
+  if (m.version) el('ver').textContent = 'v' + m.version;
   ELEVATED = !!m.elevated;
   if (ELEVATED){ el('elev').textContent='administrator'; el('elev').className='badge elev';
                  el('elevbtn').style.display='none'; }

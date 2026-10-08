@@ -169,7 +169,13 @@ namespace SpaceReportApp
 
             Web.CoreWebView2.DOMContentLoaded += async (o, a) =>
             {
+                // Shown in the header. Several downloaded copies looked identical
+                // from the inside, so there was no way to tell which one was running.
+                var v = typeof(MainWindow).Assembly.GetName().Version;
+                string version = v == null ? "" : v.Major + "." + v.Minor + "." + v.Build;
+
                 await SendAsync(new { type = "ready",
+                                      version,
                                       elevated = IsElevated(),
                                       skipAdminPrompt = GetSkipAdminPrompt(),
                                       script = _scriptPath,
