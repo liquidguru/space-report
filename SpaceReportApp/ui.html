@@ -410,14 +410,18 @@ function render(){
   // Verdict chips: the quick way to get straight to everything marked SAFE.
   h+='<div class="chips">';
   h+='<div class="chip'+(VFILTER===null&&!SYSVIEW?' on':'')+'" data-v="">All  <span class="n">'+
-     FILES.length+'</span></div>';
+     (FILES.length+SYSTEM.length)+'</span></div>';
   VORDER.forEach(function(v){
+    // Count system areas too. They carry a verdict and are shown with one, so
+    // leaving them out meant clicking SAFE made a SAFE item disappear.
     var sub=FILES.filter(function(f){return f.Verdict===v});
-    if(!sub.length) return;
-    var sz=sub.reduce(function(a,f){return a+Number(f.Bytes)},0);
+    var sys=SYSTEM.filter(function(s){return s.Verdict===v});
+    if(!sub.length && !sys.length) return;
+    var sz=sub.reduce(function(a,f){return a+Number(f.Bytes)},0)
+          +sys.reduce(function(a,s){return a+Math.max(0,Number(s.Bytes))},0);
     h+='<div class="chip'+(VFILTER===v&&!SYSVIEW?' on':'')+'" data-v="'+v+'">'+
        '<span class="dot" style="background:'+VCOLOR[v]+'"></span>'+v+
-       '  <span class="n">'+sub.length+' · '+fmt(sz)+'</span></div>';
+       '  <span class="n">'+(sub.length+sys.length)+' · '+fmt(sz)+'</span></div>';
   });
   // Without this the system section is buried under a hundred file rows and
   // nobody ever finds it.
@@ -481,7 +485,9 @@ function render(){
        '</div>';
   });
 
-  if(SYSTEM.length && !TYPEFILTER && !VFILTER) h+=systemHtml();
+  // Shown unfiltered, and also under a verdict filter restricted to matching
+  // entries - a verdict chip must never hide something carrying that verdict.
+  if(SYSTEM.length && !TYPEFILTER) h+=systemHtml(VFILTER);
 
   if(FOLDERS.length){
     h+='<h3 class="sec">Biggest folders &mdash; for context, not deletable here</h3>';
@@ -500,12 +506,15 @@ function render(){
 
 // Disk Cleanup territory. Thousands of small files each, so none of them can
 // ever appear in the file list - they need their own section.
-function systemHtml(){
+function systemHtml(verdict){
+    var list=SYSTEM.filter(function(s){return !verdict||s.Verdict===verdict});
+    if(!list.length) return '';
     var h='';
-    var known=SYSTEM.filter(function(s){return Number(s.Bytes)>0});
+    var known=list.filter(function(s){return Number(s.Bytes)>0});
     var stot=known.reduce(function(a,s){return a+Number(s.Bytes)},0);
-    var lockedN=SYSTEM.filter(function(s){return Number(s.Bytes)<0}).length;
-    h+='<h3 class="sec"><span>System cleanup areas &mdash; '+fmt(stot)+' measurable</span></h3>';
+    var lockedN=list.filter(function(s){return Number(s.Bytes)<0}).length;
+    h+='<h3 class="sec"><span>System cleanup areas'+(verdict?' marked '+verdict:'')+
+       ' &mdash; '+fmt(stot)+' measurable</span></h3>';
     h+='<div class="wh" style="margin:-.2rem 0 .7rem">What Windows Disk Cleanup calls '+
        '&ldquo;system files&rdquo;. Each is thousands of small files, so none of them show up '+
        'in the list above however low you set the threshold. '+
@@ -523,7 +532,7 @@ function systemHtml(){
       h+='<div class="notice"><div>'+lockedN+' still unreadable even as administrator &mdash; '+
          'those are locked by Windows while it is running.</div></div>';
     }
-    SYSTEM.forEach(function(s){
+    list.forEach(function(s){
       var unknown=Number(s.Bytes)<0;
       // Deliberately NOT a padlock. These are not blocked - they simply have a
       // proper reclaim route, and reusing the padlock made them read as
