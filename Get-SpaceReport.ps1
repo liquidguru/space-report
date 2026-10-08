@@ -647,13 +647,32 @@ $KB = @(
 # so the walk itself is compiled. Reparse points are skipped deliberately:
 # following junctions double-counts and can loop forever.
 # ---------------------------------------------------------------------------
-if (-not ('SpaceWalker' -as [type])) {
+if (-not ('SpaceWalker2' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
 
-public class SpaceWalker {
+public class SpaceWalker2 {
+    // Renamed from SpaceWalker when OnDisk was added: Add-Type cannot redefine a
+    // type within a session, so a console that had already loaded the old class
+    // would silently keep using it - without the sparse-file fix.
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true,
+        CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern uint GetCompressedFileSizeW(string name, out uint high);
+
+    // Space actually allocated on disk. For ordinary files this equals Length;
+    // for sparse and NTFS-compressed files it can be far smaller. Delivery
+    // Optimization's cache was 14.27 GB by Length and 4.76 GB on disk.
+    public static long OnDisk(string path) {
+        uint high;
+        uint low = GetCompressedFileSizeW(path, out high);
+        if (low == 0xFFFFFFFF && System.Runtime.InteropServices.Marshal.GetLastWin32Error() != 0)
+            return -1;
+        return ((long)high << 32) + low;
+    }
+
     public Dictionary<string,long> DirSizes = new Dictionary<string,long>(StringComparer.OrdinalIgnoreCase);
     public List<object[]> BigFiles = new List<object[]>();
     public List<string> Denied = new List<string>();
@@ -705,6 +724,13 @@ public class SpaceWalker {
                     subs.Add(fsi.FullName);
                 } else {
                     long len = ((FileInfo)fsi).Length;
+                    // Sparse/compressed files report a logical Length that can be
+                    // several times what they occupy. Only these pay for the extra
+                    // call - the attribute comes free with the enumeration.
+                    if ((fsi.Attributes & (FileAttributes.SparseFile | FileAttributes.Compressed)) != 0) {
+                        long d = OnDisk(fsi.FullName);
+                        if (d >= 0) len = d;
+                    }
                     total += len;
                     FileCount++;
                     SeenBytes += len;
@@ -953,7 +979,7 @@ Write-Host ('  ' + ('-' * 76)) -ForegroundColor DarkGray
 Write-Host "  Scanning $root ... " -NoNewline -ForegroundColor DarkGray
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$walker = [SpaceWalker]::new()
+$walker = [SpaceWalker2]::new()
 $walker.MinFileBytes = $minBytes
 # Emits "##P <bytes> <files> <folder>" lines on stdout for SpaceReportApp to
 # turn into a progress bar. Silent unless asked for.
@@ -1718,7 +1744,15 @@ function Get-ItemsForPaths {
             continue
         }
         $len = 0L
-        try { $len = (Get-Item -LiteralPath $p -Force).Length } catch { }
+        try {
+            $it  = Get-Item -LiteralPath $p -Force
+            $len = $it.Length
+            # Same rule as the walker, so "freed" is space actually freed.
+            if ($it.Attributes -band ([IO.FileAttributes]::SparseFile -bor [IO.FileAttributes]::Compressed)) {
+                $d = [SpaceWalker2]::OnDisk($it.FullName)
+                if ($d -ge 0) { $len = $d }
+            }
+        } catch { }
         $info = Resolve-Entry -FullPath $p -IsDir $false
         [pscustomobject]@{
             Path = $p; Bytes = $len; Type = 'File'
