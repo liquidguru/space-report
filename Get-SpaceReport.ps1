@@ -93,6 +93,7 @@ param(
     [int]   $MinFolderMB = 2000,
     [switch]$Ollama,
     [switch]$SelfTest,
+    [switch]$NoSnapshot,
     [switch]$Progress,
     [switch]$Html,
     [string]$Json,
@@ -649,13 +650,16 @@ $KB = @(
 # so the walk itself is compiled. Reparse points are skipped deliberately:
 # following junctions double-counts and can loop forever.
 # ---------------------------------------------------------------------------
-if (-not ('SpaceWalker2' -as [type])) {
+if (-not ('SpaceWalker3' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
 
-public class SpaceWalker2 {
+public class SpaceWalker3 {
+    // SpaceWalker3: SnapshotDirs/DeniedDirs added. Bump the name whenever this
+    // C# changes - Add-Type cannot redefine a type in a live session.
+
     // Renamed from SpaceWalker when OnDisk was added: Add-Type cannot redefine a
     // type within a session, so a console that had already loaded the old class
     // would silently keep using it - without the sparse-file fix.
@@ -696,6 +700,29 @@ public class SpaceWalker2 {
         _lastMs = ms;
         Console.Out.WriteLine("##P\t" + SeenBytes + "\t" + FileCount + "\t" + where);
         Console.Out.Flush();
+    }
+
+    // One spelling per folder for snapshots: no trailing backslash, except a
+    // bare drive root ("C:\"). Must match ConvertTo-SnapshotPath in the script.
+    private static string Norm(string p) {
+        string t = p.TrimEnd('\\');
+        if (t.Length == 2 && t[1] == ':') t += "\\";
+        return t;
+    }
+
+    // Folders at or above minBytes. Done here rather than in a PowerShell loop:
+    // a drive has hundreds of thousands of folders, and a per-folder function
+    // call in PowerShell added well over ten seconds to every scan.
+    public Dictionary<string,long> SnapshotDirs(long minBytes) {
+        var d = new Dictionary<string,long>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in DirSizes) if (kv.Value >= minBytes) d[Norm(kv.Key)] = kv.Value;
+        return d;
+    }
+
+    public List<string> DeniedDirs() {
+        var l = new List<string>();
+        foreach (var kv in DirSizes) if (kv.Value < 0) l.Add(Norm(kv.Key));
+        return l;
     }
 
     public long Walk(string path) {
@@ -907,13 +934,233 @@ $VerdictLegend = [ordered]@{
 }
 
 # ---------------------------------------------------------------------------
-# -SelfTest : assert the safety rules against paths designed to make the
-# classification disagree with the file's identity.
+# SCAN SNAPSHOTS
 #
-# Resolve-Entry is a pure function of the path string, so none of these need to
-# exist on disk. Every case below is a path where a location rule in $KB would
-# happily claim the file - the point is that the safety pass gets there first.
+# After each scan the folder sizes are saved, and the next scan of the same
+# root is compared against them, so "where did the space go?" becomes a list
+# rather than detective work.
+#
+# Folders, not files: growth is usually many small files (Delivery
+# Optimization was 317 of them), which a big-files comparison never sees.
+#
+# Only folders of at least $SnapshotMinBytes are recorded, which keeps a whole
+# drive to a few thousand entries. A folder below that on one side counts as
+# zero there, so any reported change can be off by at most that amount.
+#
+# Two ways this could lie, both handled in Compare-Snapshots:
+#   - A folder unreadable in one scan but not the other (e.g. a normal scan
+#     then an elevated one) would appear as sudden growth. Such folders are
+#     excluded, and their contribution is taken back out of their parents.
+#   - Measurement changes between versions (v1.0.5 changed how sparse files
+#     are sized) would show as phantom change. $SnapshotFormat records the
+#     measurement scheme and a mismatch is reported.
 # ---------------------------------------------------------------------------
+$SnapshotFormat   = 2        # 1 = Length only; 2 = on-disk size for sparse/compressed
+$SnapshotMinBytes = 10MB
+$SnapshotKeep     = 10       # per scanned root
+$SnapshotDir      = Join-Path $env:LOCALAPPDATA 'SpaceReport\snapshots'
+
+function Get-SnapshotKey {
+    param([string]$Root)
+    $r   = $Root.TrimEnd('\').ToUpperInvariant()
+    $sha = [Security.Cryptography.SHA1]::Create()
+    $h   = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($r))[0..3] | ForEach-Object { $_.ToString('x2') })
+    $lbl = ($r -replace '[^A-Za-z0-9]+', '_').Trim('_')
+    # Keep the END of the path - "TEMP_SNAPTEST" says what was scanned,
+    # "C_USERS_LIQUI_APPDATA_LO" does not. The hash keeps it unique either way.
+    if ($lbl.Length -gt 24) { $lbl = $lbl.Substring($lbl.Length - 24).Trim('_') }
+    "$lbl-$h"
+}
+
+function ConvertTo-SnapshotPath {
+    # One spelling per folder: no trailing backslash, except a bare drive root.
+    param([string]$Path)
+    $p = $Path.TrimEnd('\')
+    if ($p.Length -eq 2 -and $p[1] -eq ':') { $p += '\' }
+    $p
+}
+
+function New-Snapshot {
+    param($Walker, [string]$Root, [long]$DriveSize, [long]$DriveFree, [bool]$Elevated)
+    $dirs   = $Walker.SnapshotDirs($SnapshotMinBytes)
+    $denied = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in $Walker.DeniedDirs()) { [void]$denied.Add($d) }
+    [pscustomobject]@{
+        Format = $SnapshotFormat; Root = (ConvertTo-SnapshotPath $Root)
+        Taken = (Get-Date); Elevated = $Elevated
+        DriveSize = $DriveSize; DriveFree = $DriveFree; FileCount = [long]$Walker.FileCount
+        Dirs = $dirs; Denied = $denied
+    }
+}
+
+function Save-Snapshot {
+    param($Snap)
+    New-Item -ItemType Directory -Force -Path $SnapshotDir | Out-Null
+    $key  = Get-SnapshotKey $Snap.Root
+    $file = Join-Path $SnapshotDir ('{0}-{1:yyyyMMdd-HHmmss}.json.gz' -f $key, $Snap.Taken)
+    $doc  = [ordered]@{
+        Format = $Snap.Format; Root = $Snap.Root; Taken = $Snap.Taken.ToString('o')
+        Elevated = $Snap.Elevated; DriveSize = $Snap.DriveSize; DriveFree = $Snap.DriveFree
+        FileCount = $Snap.FileCount
+        # Parallel arrays rather than an object keyed by path: they round-trip
+        # through ConvertFrom-Json identically on PowerShell 5.1 and 7.
+        P = @($Snap.Dirs.Keys); B = @($Snap.Dirs.Values); D = @($Snap.Denied)
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($doc | ConvertTo-Json -Compress -Depth 4))
+    $fs = [IO.File]::Create($file)
+    try {
+        $gz = [IO.Compression.GZipStream]::new($fs, [IO.Compression.CompressionLevel]::Optimal)
+        try { $gz.Write($bytes, 0, $bytes.Length) } finally { $gz.Dispose() }
+    } finally { $fs.Dispose() }
+
+    # Keep the newest few per root.
+    Get-ChildItem -LiteralPath $SnapshotDir -Filter "$key-*.json.gz" |
+        Sort-Object Name -Descending | Select-Object -Skip $SnapshotKeep |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $file
+}
+
+function Read-Snapshot {
+    param([string]$File)
+    $fs = [IO.File]::OpenRead($File)
+    try {
+        $gz = [IO.Compression.GZipStream]::new($fs, [IO.Compression.CompressionMode]::Decompress)
+        $sr = [IO.StreamReader]::new($gz, [Text.Encoding]::UTF8)
+        try { $doc = $sr.ReadToEnd() | ConvertFrom-Json } finally { $sr.Dispose() }
+    } finally { $fs.Dispose() }
+
+    $dirs   = [Collections.Generic.Dictionary[string,long]]::new([StringComparer]::OrdinalIgnoreCase)
+    $denied = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $P = @($doc.P); $B = @($doc.B)
+    for ($i = 0; $i -lt $P.Count; $i++) { $dirs[$P[$i]] = [long]$B[$i] }
+    foreach ($d in @($doc.D)) { if ($d) { [void]$denied.Add($d) } }
+    # PowerShell 7's ConvertFrom-Json already turns an ISO date string into a
+    # DateTime; 5.1 leaves it as text. Never round-trip it through a string: a
+    # DateTime stringifies in US order (10/09/2026) and re-parsing that in an
+    # en-AU locale silently swaps day and month - 9 Oct came back as 10 Sep.
+    $taken = if ($doc.Taken -is [datetime]) { $doc.Taken.ToLocalTime() }
+             else { [datetime]::Parse([string]$doc.Taken, [Globalization.CultureInfo]::InvariantCulture,
+                                      [Globalization.DateTimeStyles]::RoundtripKind).ToLocalTime() }
+    [pscustomobject]@{
+        Format = [int]$doc.Format; Root = $doc.Root
+        Taken = $taken
+        Elevated = [bool]$doc.Elevated; DriveSize = [long]$doc.DriveSize; DriveFree = [long]$doc.DriveFree
+        FileCount = [long]$doc.FileCount; Dirs = $dirs; Denied = $denied
+    }
+}
+
+function Get-PreviousSnapshot {
+    param([string]$Root)
+    if (-not (Test-Path -LiteralPath $SnapshotDir)) { return $null }
+    $key = Get-SnapshotKey (ConvertTo-SnapshotPath $Root)
+    $f = Get-ChildItem -LiteralPath $SnapshotDir -Filter "$key-*.json.gz" |
+         Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $f) { return $null }
+    try { Read-Snapshot $f.FullName } catch { $null }   # a damaged file is just "no history"
+}
+
+function Get-Ancestors {
+    param([string]$Path)
+    $a = [IO.Path]::GetDirectoryName($Path)
+    while ($a) { $a; $a = [IO.Path]::GetDirectoryName($a) }
+}
+
+# Pure: two snapshots in, a description of what changed out. No disk access,
+# so -SelfTest can exercise it with synthetic snapshots.
+function Compare-Snapshots {
+    param($Prev, $Now, [long]$MinDelta = 50MB, [int]$TopGrew = 25, [int]$TopShrank = 15)
+
+    # Folders unreadable in either scan, and everything beneath them.
+    $deniedAll = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in $Prev.Denied) { [void]$deniedAll.Add($d) }
+    foreach ($d in $Now.Denied)  { [void]$deniedAll.Add($d) }
+
+    $isExcluded = {
+        param($p)
+        if ($deniedAll.Contains($p)) { return $true }
+        foreach ($a in (Get-Ancestors $p)) { if ($deniedAll.Contains($a)) { return $true } }
+        $false
+    }
+
+    $before = @{}; $after = @{}; $delta = @{}
+    $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($k in $Prev.Dirs.Keys) { [void]$keys.Add($k) }
+    foreach ($k in $Now.Dirs.Keys)  { [void]$keys.Add($k) }
+
+    $excluded = 0
+    foreach ($k in $keys) {
+        if ($deniedAll.Count -and (& $isExcluded $k)) { $excluded++; continue }
+        $b = 0L; if ($Prev.Dirs.ContainsKey($k)) { $b = $Prev.Dirs[$k] }
+        $a = 0L; if ($Now.Dirs.ContainsKey($k))  { $a = $Now.Dirs[$k] }
+        $before[$k] = $b; $after[$k] = $a; $delta[$k] = $a - $b
+    }
+
+    # A folder readable on one side only still contributed to its parents on
+    # that side. Take that back out, or the parents show the newly visible
+    # bytes as growth. Only the outermost such folder counts, or nested ones
+    # would be subtracted twice.
+    foreach ($d in $deniedAll) {
+        $nested = $false
+        foreach ($a in (Get-Ancestors $d)) { if ($deniedAll.Contains($a)) { $nested = $true; break } }
+        if ($nested) { continue }
+        $vNow = 0L;  if ($Now.Dirs.ContainsKey($d))  { $vNow  = $Now.Dirs[$d] }
+        $vPrev = 0L; if ($Prev.Dirs.ContainsKey($d)) { $vPrev = $Prev.Dirs[$d] }
+        $contrib = $vNow - $vPrev
+        if ($contrib -eq 0) { continue }
+        foreach ($a in (Get-Ancestors $d)) {
+            if ($delta.ContainsKey($a)) { $delta[$a] -= $contrib }
+        }
+    }
+
+    # Attribute each change to the most specific folders that explain it. A
+    # folder is dropped when its children TOGETHER account for at least 80% of
+    # its change in the same direction - counting only children big enough to
+    # be reported (or explained) themselves. A single-child rule listed the
+    # parent alongside its children whenever two of them shared the change, so
+    # -9, -5 and -4 GB all appeared for a 9 GB change. Growth spread across many
+    # small folders still lands on the parent, since none of those children
+    # clears the threshold.
+    $children = @{}
+    foreach ($k in $delta.Keys) {
+        $par = [IO.Path]::GetDirectoryName($k)
+        if ($par -and $delta.ContainsKey($par)) {
+            if (-not $children.ContainsKey($par)) { $children[$par] = [Collections.Generic.List[string]]::new() }
+            $children[$par].Add($k)
+        }
+    }
+
+    $rows = foreach ($k in $delta.Keys) {
+        $d = $delta[$k]
+        if ([math]::Abs($d) -lt $MinDelta) { continue }
+        $covered = 0L
+        if ($children.ContainsKey($k)) {
+            foreach ($c in $children[$k]) {
+                $dc = $delta[$c]
+                if ([math]::Sign($dc) -eq [math]::Sign($d) -and [math]::Abs($dc) -ge $MinDelta) { $covered += $dc }
+            }
+        }
+        if ([math]::Abs($covered) -ge 0.8 * [math]::Abs($d)) { continue }
+        [pscustomobject]@{ Path = $k; Before = $before[$k]; After = $after[$k]; Delta = $d }
+    }
+    $rows = @($rows)
+
+    $usedPrev = $Prev.DriveSize - $Prev.DriveFree
+    $usedNow  = $Now.DriveSize  - $Now.DriveFree
+
+    [pscustomobject]@{
+        PrevTaken        = $Prev.Taken
+        NowTaken         = $Now.Taken
+        PrevElevated     = $Prev.Elevated
+        NowElevated      = $Now.Elevated
+        ElevationDiffers = ($Prev.Elevated -ne $Now.Elevated)
+        FormatDiffers    = ($Prev.Format -ne $Now.Format)
+        UsedDelta        = $(if ($Prev.DriveSize -gt 0 -and $Now.DriveSize -gt 0) { $usedNow - $usedPrev } else { 0L })
+        Excluded         = $excluded
+        Grew   = @($rows | Where-Object Delta -gt 0 | Sort-Object Delta -Descending | Select-Object -First $TopGrew)
+        Shrank = @($rows | Where-Object Delta -lt 0 | Sort-Object Delta | Select-Object -First $TopShrank)
+    }
+}
+
 # ---------------------------------------------------------------------------
 # -RunCleanup : invoke a SUPPORTED Windows cleanup for a system area.
 #
@@ -935,7 +1182,7 @@ if ($RunCleanup) {
         $t = 0L; $any = $false
         foreach ($d in $Dirs) {
             if (Test-Path -LiteralPath $d -ErrorAction SilentlyContinue) {
-                $w = [SpaceWalker2]::new(); $w.MinFileBytes = [long]::MaxValue
+                $w = [SpaceWalker3]::new(); $w.MinFileBytes = [long]::MaxValue
                 $t += $w.Walk($d); $any = $true
             }
         }
@@ -977,6 +1224,14 @@ if ($RunCleanup) {
     return
 }
 
+# ---------------------------------------------------------------------------
+# -SelfTest : assert the safety rules against paths designed to make the
+# classification disagree with the file's identity.
+#
+# Resolve-Entry is a pure function of the path string, so none of these need to
+# exist on disk. Every case below is a path where a location rule in $KB would
+# happily claim the file - the point is that the safety pass gets there first.
+# ---------------------------------------------------------------------------
 if ($SelfTest) {
     $T = "$env:SystemDrive\Users\someone\AppData\Local\Temp"   # the trap: a broad SAFE rule
     # NB: hashtables, not nested arrays - PowerShell flattens @(@(),@()) into a
@@ -1014,9 +1269,96 @@ if ($SelfTest) {
             Write-Host ('        path: {0}' -f $c.Path) -ForegroundColor DarkGray
         }
     }
+    # --- scan comparison -----------------------------------------------------
     Write-Host ''
-    if ($fail) { Write-Host "  $fail of $($cases.Count) failed." -ForegroundColor Red; exit 1 }
-    Write-Host "  All $($cases.Count) passed." -ForegroundColor Green
+    Write-Host '  SCAN COMPARISON SELF-TEST' -ForegroundColor White
+    Write-Host ('  ' + ('-' * 76)) -ForegroundColor DarkGray
+    function Snap {
+        param([hashtable]$Dirs, [string[]]$Denied = @(), [bool]$Elevated = $false, [long]$Free = 100GB)
+        $d = [Collections.Generic.Dictionary[string,long]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($k in $Dirs.Keys) { $d[$k] = [long]$Dirs[$k] }
+        $h = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($x in $Denied) { [void]$h.Add($x) }
+        [pscustomobject]@{ Format = $SnapshotFormat; Root = 'C:\'; Taken = (Get-Date); Elevated = $Elevated
+                           DriveSize = 1000GB; DriveFree = $Free; FileCount = 0; Dirs = $d; Denied = $h }
+    }
+    $total = 0
+    $check = {
+        param([string]$Why, [bool]$Ok, [string]$Detail)
+        $script:total++
+        if ($Ok) { Write-Host "  PASS  $Why" -ForegroundColor Green }
+        else     { $script:fail++; Write-Host "  FAIL  $Why" -ForegroundColor Red; Write-Host "        $Detail" -ForegroundColor DarkGray }
+    }
+
+    # 1. Growth deep in a tree is reported once, at the folder that explains it.
+    $r = Compare-Snapshots `
+        (Snap @{ 'C:\' = 100GB; 'C:\A' = 50GB; 'C:\A\B' = 10GB; 'C:\X' = 20GB }) `
+        (Snap @{ 'C:\' = 103GB; 'C:\A' = 53GB; 'C:\A\B' = 13GB; 'C:\X' = 20GB })
+    & $check 'growth is attributed to the deepest folder, once' `
+        ($r.Grew.Count -eq 1 -and $r.Grew[0].Path -eq 'C:\A\B' -and $r.Grew[0].Delta -eq 3GB) `
+        ("got: " + (($r.Grew | ForEach-Object { "$($_.Path) $($_.Delta)" }) -join '; '))
+
+    # 2. A folder unreadable before and readable now is NOT growth - the trap of
+    #    comparing a normal scan with an elevated one.
+    $r = Compare-Snapshots `
+        (Snap @{ 'C:\' = 100GB; 'C:\A' = 50GB } -Denied @('C:\SVI')) `
+        (Snap @{ 'C:\' = 120GB; 'C:\A' = 50GB; 'C:\SVI' = 20GB; 'C:\SVI\x' = 20GB } -Elevated $true)
+    & $check 'a newly readable folder is not reported as growth' `
+        ($r.Grew.Count -eq 0 -and $r.ElevationDiffers) `
+        ("got: " + (($r.Grew | ForEach-Object { "$($_.Path) $($_.Delta)" }) -join '; '))
+
+    # 3. Shrinkage is reported, and a folder that vanished counts as shrinking to zero.
+    $r = Compare-Snapshots `
+        (Snap @{ 'C:\' = 100GB; 'C:\A' = 50GB; 'C:\Gone' = 4GB }) `
+        (Snap @{ 'C:\' = 91GB;  'C:\A' = 45GB })
+    & $check 'shrinkage and deleted folders are reported' `
+        ($r.Shrank.Count -eq 2 -and $r.Shrank[0].Path -eq 'C:\A' -and $r.Shrank[1].Path -eq 'C:\Gone' -and $r.Shrank[1].After -eq 0) `
+        ("got: " + (($r.Shrank | ForEach-Object { "$($_.Path) $($_.Delta)" }) -join '; '))
+
+    # 4. Growth spread across many small folders - each under the threshold, as
+    #    in node_modules or a cache - is reported at the parent.
+    $p4 = @{ 'C:\' = 100GB; 'C:\A' = 50GB }; $n4 = @{ 'C:\' = 103GB; 'C:\A' = 53GB }
+    1..100 | ForEach-Object { $p4["C:\A\$_"] = 20MB; $n4["C:\A\$_"] = 20MB + 30MB }
+    $r = Compare-Snapshots (Snap $p4) (Snap $n4)
+    & $check 'growth spread across many small folders lands on the parent' `
+        ($r.Grew.Count -eq 1 -and $r.Grew[0].Path -eq 'C:\A') `
+        ("got: " + (($r.Grew | ForEach-Object { "$($_.Path) $($_.Delta)" }) -join '; '))
+
+    # 5. Siblings that each clear the threshold are listed individually, and the
+    #    parent is not listed on top of them (no double counting).
+    $r = Compare-Snapshots `
+        (Snap @{ 'C:\' = 100GB; 'C:\A' = 50GB; 'C:\A\1' = 1GB; 'C:\A\2' = 1GB }) `
+        (Snap @{ 'C:\' = 104GB; 'C:\A' = 54GB; 'C:\A\1' = 3GB; 'C:\A\2' = 3GB })
+    & $check 'parent is not listed on top of children that explain it' `
+        ($r.Grew.Count -eq 2 -and -not ($r.Grew.Path -contains 'C:\A') -and -not ($r.Grew.Path -contains 'C:\')) `
+        ("got: " + (($r.Grew | ForEach-Object { "$($_.Path) $($_.Delta)" }) -join '; '))
+
+    # 6. Changes below the threshold are noise and are not listed.
+    $r = Compare-Snapshots (Snap @{ 'C:\A' = 1GB }) (Snap @{ 'C:\A' = 1GB + 10MB })
+    & $check 'changes below the reporting threshold are ignored' ($r.Grew.Count -eq 0) "got $($r.Grew.Count) rows"
+
+    # 7. A snapshot survives being saved and read back - timestamp included.
+    #    The one case here that touches disk, in a throwaway folder: an en-AU
+    #    locale once turned 9 Oct into 10 Sep on the way back in.
+    $realDir = $SnapshotDir
+    $SnapshotDir = Join-Path ([IO.Path]::GetTempPath()) ('sr-selftest-' + [guid]::NewGuid().ToString('N'))
+    try {
+        $orig = Snap @{ 'C:\' = 100GB; 'C:\A' = 5GB } -Denied @('C:\SVI') -Elevated $true
+        $orig.Taken = Get-Date -Year 2026 -Month 10 -Day 9 -Hour 14 -Minute 30 -Second 0 -Millisecond 0
+        $file = Save-Snapshot $orig
+        $back = Read-Snapshot $file
+        & $check 'snapshot round-trips intact, timestamp included' `
+            ($back.Taken -eq $orig.Taken -and $back.Dirs['C:\A'] -eq 5GB -and $back.Denied.Contains('C:\SVI') -and $back.Elevated) `
+            ("taken {0:o} -> {1:o}" -f $orig.Taken, $back.Taken)
+    } finally {
+        Remove-Item -LiteralPath $SnapshotDir -Recurse -Force -ErrorAction SilentlyContinue
+        $SnapshotDir = $realDir
+    }
+
+    Write-Host ''
+    $all = $cases.Count + $total
+    if ($fail) { Write-Host "  $fail of $all failed." -ForegroundColor Red; exit 1 }
+    Write-Host "  All $all passed." -ForegroundColor Green
     Write-Host ''
     return
 }
@@ -1044,7 +1386,7 @@ Write-Host ('  ' + ('-' * 76)) -ForegroundColor DarkGray
 Write-Host "  Scanning $root ... " -NoNewline -ForegroundColor DarkGray
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$walker = [SpaceWalker2]::new()
+$walker = [SpaceWalker3]::new()
 $walker.MinFileBytes = $minBytes
 # Emits "##P <bytes> <files> <folder>" lines on stdout for SpaceReportApp to
 # turn into a progress bar. Silent unless asked for.
@@ -1079,10 +1421,37 @@ if ($vol) {
 
     $unseen = $used - $totalBytes
     if ($unseen -gt 2GB -and $root -eq ($driveLetter + '\')) {
-        Write-Host ('      {0} is in folders this scan could not read (protected system' -f (Format-Size $unseen).Trim()) -ForegroundColor DarkGray
-        Write-Host  '      folders, or hard-linked bytes counted once here but twice by WinDirStat).' -ForegroundColor DarkGray
+        Write-Host ('      {0} is in folders this scan could not read - protected system' -f (Format-Size $unseen).Trim()) -ForegroundColor DarkGray
+        Write-Host  '      folders. Re-run as administrator to include them.' -ForegroundColor DarkGray
     }
     Write-Host ''
+}
+
+# --- compare with the previous scan of this root, then save this one --------
+$changes = $null
+$snapNote = $null
+try {
+    $dSize = 0L; $dFree = 0L
+    if ($vol -and $root -eq ($driveLetter + '')) { $dSize = [long]$vol.Size; $dFree = [long]$vol.FreeSpace }
+    $snapNow  = New-Snapshot -Walker $walker -Root $root -DriveSize $dSize -DriveFree $dFree -Elevated $isAdmin
+    $snapPrev = Get-PreviousSnapshot $root
+    if ($snapPrev) {
+        $changes = Compare-Snapshots $snapPrev $snapNow
+        # Name what each changed folder is, using the same knowledge base.
+        foreach ($row in @($changes.Grew) + @($changes.Shrank)) {
+            $info = Resolve-Entry -FullPath $row.Path -IsDir $true
+            $row | Add-Member -NotePropertyName Name    -NotePropertyValue $info.Name
+            $row | Add-Member -NotePropertyName Verdict -NotePropertyValue $info.Verdict
+            $row | Add-Member -NotePropertyName What    -NotePropertyValue $info.What
+        }
+    } else {
+        $snapNote = 'First scan of this location - saved as the baseline for next time.'
+    }
+    if (-not $NoSnapshot) { [void](Save-Snapshot $snapNow) }
+} catch {
+    # History is a convenience; never let it break a scan.
+    $snapNote = "Scan history unavailable: $($_.Exception.Message)"
+    $changes = $null
 }
 
 # ---------------------------------------------------------------------------
@@ -1344,6 +1713,45 @@ if ($allFiles.Count -gt 0) {
     Write-Host ''
 }
 
+if ($changes) {
+    $ago = (Get-Date) - $changes.PrevTaken
+    $agoText = if ($ago.TotalDays -ge 1) { '{0:N0} day(s) ago' -f $ago.TotalDays }
+               elseif ($ago.TotalHours -ge 1) { '{0:N0} hour(s) ago' -f $ago.TotalHours }
+               else { '{0:N0} minute(s) ago' -f $ago.TotalMinutes }
+    Write-Host ''
+    Write-Host ('  CHANGES SINCE LAST SCAN  ({0:ddd d MMM HH:mm}, {1})' -f $changes.PrevTaken, $agoText) -ForegroundColor White
+    Write-Host ('  ' + ('-' * 76)) -ForegroundColor DarkGray
+    if ($changes.UsedDelta -ne 0) {
+        $sign = if ($changes.UsedDelta -gt 0) { '+' } else { '-' }
+        Write-Host ('  Used space on the drive: {0}{1}' -f $sign, (Format-Size ([math]::Abs($changes.UsedDelta))).Trim())
+    }
+    if ($changes.ElevationDiffers) {
+        Write-Host '  One scan was elevated and the other was not. Folders readable in only' -ForegroundColor DarkYellow
+        Write-Host '  one of them are left out, so their change is not shown.' -ForegroundColor DarkYellow
+    }
+    if ($changes.FormatDiffers) {
+        Write-Host '  The previous scan used an older measuring method; some changes may be' -ForegroundColor DarkYellow
+        Write-Host '  differences in measurement rather than real growth.' -ForegroundColor DarkYellow
+    }
+    foreach ($set in @(@{T='Grew'; R=$changes.Grew; C='Yellow'; S='+'}, @{T='Shrank'; R=$changes.Shrank; C='Green'; S='-'})) {
+        if (-not $set.R -or @($set.R).Count -eq 0) { continue }
+        Write-Host ''
+        Write-Host ("  {0}:" -f $set.T) -ForegroundColor Gray
+        foreach ($c in $set.R) {
+            Write-Host ('  {0}{1} ' -f $set.S, (Format-Size ([math]::Abs($c.Delta)))) -NoNewline -ForegroundColor $set.C
+            Write-Host (' {0}' -f $c.Path)
+            Write-Host ('              {0}  ({1} -> {2})' -f $c.Name, (Format-Size $c.Before).Trim(), (Format-Size $c.After).Trim()) -ForegroundColor DarkGray
+        }
+    }
+    if (@($changes.Grew).Count -eq 0 -and @($changes.Shrank).Count -eq 0) {
+        Write-Host '  No folder changed by more than 50 MB.' -ForegroundColor DarkGray
+    }
+    Write-Host ''
+} elseif ($snapNote) {
+    Write-Host ''
+    Write-Host "  $snapNote" -ForegroundColor DarkGray
+}
+
 if ($sysResults.Count -gt 0) {
     $sysKnown = @($sysResults | Where-Object { $_.Bytes -gt 0 })
     $sysTotal = 0L
@@ -1421,6 +1829,15 @@ if ($Json) {
         Files     = @($allFiles  | Select-Object Path,Bytes,Name,Verdict,What,How,Mode)
         Folders   = @($folders   | Select-Object Path,Bytes,Name,Verdict,What,How,Mode)
         System    = @($sysResults | Select-Object Path,Bytes,Name,Verdict,What,How,Mode,Action)
+        SnapshotNote = $snapNote
+        Changes   = $(if ($changes) { [ordered]@{
+                        PrevTaken = $changes.PrevTaken.ToString('o')
+                        UsedDelta = $changes.UsedDelta
+                        ElevationDiffers = $changes.ElevationDiffers
+                        FormatDiffers = $changes.FormatDiffers
+                        Grew   = @($changes.Grew   | Select-Object Path,Before,After,Delta,Name,Verdict,What)
+                        Shrank = @($changes.Shrank | Select-Object Path,Before,After,Delta,Name,Verdict,What)
+                    } } else { $null })
     }
     $payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Json -Encoding UTF8
     Write-Host "  JSON written to $Json" -ForegroundColor DarkGray
@@ -1816,7 +2233,7 @@ function Get-ItemsForPaths {
             $len = $it.Length
             # Same rule as the walker, so "freed" is space actually freed.
             if ($it.Attributes -band ([IO.FileAttributes]::SparseFile -bor [IO.FileAttributes]::Compressed)) {
-                $d = [SpaceWalker2]::OnDisk($it.FullName)
+                $d = [SpaceWalker3]::OnDisk($it.FullName)
                 if ($d -ge 0) { $len = $d }
             }
         } catch { }

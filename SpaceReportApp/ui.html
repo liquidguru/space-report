@@ -90,6 +90,10 @@ h3.sec button{padding:.3rem .7rem;font-size:11px;text-transform:none;letter-spac
 .chip.syschip{margin-left:auto;border-color:#8a6a1266;color:var(--review)}
 .chip.syschip:hover{border-color:var(--review)}
 .chip.syschip.on{border-color:var(--review);background:#8a6a1220;color:var(--fg)}
+.chip.chgchip{border-color:#4f8cff55;color:#9dbcff}
+.chip.chgchip:hover{border-color:var(--accent)}
+.chip.chgchip.on{border-color:var(--accent);background:#4f8cff20;color:var(--fg)}
+.syschip+.chgchip{margin-left:0}
 
 /* ---------- inline notice ---------- */
 .notice{display:flex;align-items:center;gap:1rem;background:#8a6a1218;border:1px solid #8a6a1266;
@@ -258,6 +262,19 @@ if (!window.chrome || !window.chrome.webview) {
 
 var FILES = [], FOLDERS = [], SYSTEM = [], SELECTED = {}, TYPEFILTER = null, VFILTER = null, BUSY = false;
 var ELEVATED = false, SYSVIEW = false, AUTOVIEW = null, PENDING_CLEAN = null, LASTSCAN = null;
+var CHANGES = null, SNAPNOTE = null, CHANGESVIEW = false;
+
+function shortDate(iso){
+  var d=new Date(iso); if(isNaN(d)) return '';
+  return d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'})+' '+
+         d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
+}
+function ago(iso){
+  var m=(Date.now()-new Date(iso).getTime())/60000;
+  if(m<60) return Math.max(1,Math.round(m))+' min ago';
+  if(m<60*24) return Math.round(m/60)+' h ago';
+  return Math.round(m/1440)+' days ago';
+}
 var VORDER = ['SAFE','TOOL','REVIEW','UNKNOWN','KEEP','NEVER'];
 var VCOLOR = {SAFE:'var(--safe)',TOOL:'var(--tool)',REVIEW:'var(--review)',
               KEEP:'var(--keep)',NEVER:'var(--never)',UNKNOWN:'var(--unknown)'};
@@ -387,6 +404,7 @@ el('elevbtn').onclick = function(){ post({cmd:'elevate'}); };
 function onScan(d){
   BUSY=false; el('scan').disabled=false;
   FILES = d.Files||[]; FOLDERS = d.Folders||[]; SYSTEM = d.System||[];
+  CHANGES = d.Changes||null; SNAPNOTE = d.SnapshotNote||null; CHANGESVIEW = false;
   LASTSCAN = {drive:d.Drive, files:d.FileCount};
   paintDrive(d.DriveSize, d.DriveFree);
 
@@ -394,6 +412,7 @@ function onScan(d){
   // title so an external capture script knows the results are on screen.
   if(AUTOVIEW){
     if(AUTOVIEW.toLowerCase()==='system') SYSVIEW=true;
+    else if(AUTOVIEW.toLowerCase()==='changes') CHANGESVIEW=!!CHANGES;
     else VFILTER=AUTOVIEW.toUpperCase();
     AUTOVIEW=null;
   }
@@ -449,9 +468,18 @@ function render(){
     h+='<div class="chip syschip'+(SYSVIEW?' on':'')+'" id="syschip">🧹 System cleanup'+
        '  <span class="n">'+fmt(st)+(lk?' · '+lk+' need admin':'')+'</span></div>';
   }
+  // Comparison with the previous scan of this drive, if there is one.
+  if(CHANGES){
+    var ud=Number(CHANGES.UsedDelta)||0;
+    h+='<div class="chip chgchip'+(CHANGESVIEW?' on':'')+'" id="chgchip">📈 Since '+shortDate(CHANGES.PrevTaken)+
+       '  <span class="n">'+(ud===0?'':(ud>0?'+':'−')+fmt(Math.abs(ud)))+'</span></div>';
+  } else if(SNAPNOTE){
+    h+='<div class="chip chgchip" style="opacity:.6;cursor:default" title="'+esc(SNAPNOTE)+'">📈 Baseline saved</div>';
+  }
   h+='</div>';
 
   if(SYSVIEW){ el('main').innerHTML = h + systemHtml(); return; }
+  if(CHANGESVIEW){ el('main').innerHTML = h + changesHtml(); return; }
 
   h+='<h3 class="sec"><span>'+(VFILTER?VFILTER+' by type':'By type')+' &mdash; '+
      scope.length+' files, '+fmt(total)+' (click to filter)</span></h3><div class="types">';
@@ -519,6 +547,48 @@ function render(){
     });
   }
   el('main').innerHTML=h;
+}
+
+// What changed since the previous scan of this drive. Each row is the most
+// specific folder that explains a change, so nothing is counted twice.
+function changesHtml(){
+  var c=CHANGES, h='', ud=Number(c.UsedDelta)||0;
+  h+='<h3 class="sec"><span>Changes since '+esc(shortDate(c.PrevTaken))+' &mdash; '+esc(ago(c.PrevTaken))+'</span></h3>';
+  h+='<div class="wh" style="margin:-.2rem 0 .8rem">';
+  if(ud!==0) h+='Used space on the drive <b style="color:'+(ud>0?'var(--review)':'var(--safe)')+'">'+
+                (ud>0?'grew by ':'fell by ')+fmt(Math.abs(ud))+'</b>. ';
+  h+='Each row is the most specific folder that explains a change, so rows never double-count. '+
+     'Folders that changed by less than 50 MB are left out.</div>';
+  if(c.ElevationDiffers)
+    h+='<div class="notice"><div><b>One scan was run as administrator and the other wasn&rsquo;t.</b><br>'+
+       'Folders only readable in one of them are left out, so changes inside protected folders aren&rsquo;t shown. '+
+       'For a full comparison, scan the same way both times.</div></div>';
+  if(c.FormatDiffers)
+    h+='<div class="notice"><div><b>The previous scan used an older way of measuring.</b><br>'+
+       'Some differences may come from the measuring rather than real change. The next scan will compare cleanly.</div></div>';
+
+  function rows(list, grew){
+    var out='';
+    (list||[]).forEach(function(r){
+      out+='<div class="row v-'+esc(r.Verdict||'UNKNOWN')+' locked">'+
+        '<div class="box"><span class="lock">'+(grew?'▲':'▼')+'</span></div>'+
+        '<div class="mid"><div class="p" data-r="'+esc(r.Path)+'" title="Show in Explorer">'+esc(r.Path)+'</div>'+
+        '<div class="nm">'+esc(r.Name||'')+'</div>'+
+        '<div class="wh">'+fmt(r.Before)+' &rarr; '+fmt(r.After)+'</div></div>'+
+        '<div class="right"><div class="sz" style="color:'+(grew?'var(--review)':'var(--safe)')+'">'+
+          (grew?'+':'−')+fmt(Math.abs(Number(r.Delta)))+'</div>'+
+        (r.Verdict?'<span class="pill p-'+esc(r.Verdict)+'">'+esc(r.Verdict)+'</span>':'')+'</div></div>';
+    });
+    return out;
+  }
+  var g=c.Grew||[], s=c.Shrank||[];
+  if(!g.length && !s.length){
+    h+='<div class="state" style="padding:2.5rem 1rem"><h2>Nothing changed by more than 50 MB</h2></div>';
+    return h;
+  }
+  if(g.length){ h+='<h3 class="sec" style="margin-top:1rem">Grew</h3>'+rows(g,true); }
+  if(s.length){ h+='<h3 class="sec">Shrank</h3>'+rows(s,false); }
+  return h;
 }
 
 // Disk Cleanup territory. Thousands of small files each, so none of them can
@@ -617,9 +687,10 @@ el('main').addEventListener('click', function(e){
 
   var chip=t.closest?t.closest('.chip'):null;
   if(chip){
-    if(chip.id==='syschip'){ SYSVIEW=!SYSVIEW; TYPEFILTER=null; VFILTER=null; render(); return; }
+    if(chip.id==='syschip'){ SYSVIEW=!SYSVIEW; CHANGESVIEW=false; TYPEFILTER=null; VFILTER=null; render(); return; }
+    if(chip.id==='chgchip'){ if(!CHANGES) return; CHANGESVIEW=!CHANGESVIEW; SYSVIEW=false; TYPEFILTER=null; VFILTER=null; render(); return; }
     var v=chip.getAttribute('data-v');
-    SYSVIEW=false;
+    SYSVIEW=false; CHANGESVIEW=false;
     VFILTER = v ? (VFILTER===v?null:v) : null;
     TYPEFILTER=null; render(); return;
   }

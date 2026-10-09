@@ -84,6 +84,30 @@ header and beside the locked rows. Choosing it restarts the app and asks Windows
 permission, so you will need to run the scan again — which is why it asks up front rather
 than after you have waited for a scan.
 
+## What changed since last time
+
+Every scan is saved, and the next scan of the same drive is compared against it — so
+"where did 40 GB go?" becomes a list instead of detective work. The **📈 Since …** chip
+opens it.
+
+It compares **folders**, not files, because growth is usually many small files that no
+size-ranked list would ever show. And each change is reported at **the most specific
+folder that explains it**: if a cache grows 2 GB, you see the cache, not the cache *and*
+every parent folder up to `C:\` saying the same 2 GB again.
+
+Two things it guards against, since both would produce convincing nonsense:
+
+- **Admin and non-admin scans see different folders.** Compare a normal scan with an
+  elevated one and protected folders would look like tens of GB of sudden growth. Folders
+  readable in only one of the two scans are left out, their sizes are taken back out of
+  their parents, and the app tells you the scans differed.
+- **Measurement changes between versions.** If a snapshot was measured differently, the
+  comparison says so rather than presenting the difference as real change.
+
+Snapshots live in `%LOCALAPPDATA%\SpaceReport\snapshots`. A whole drive is about 80 KB,
+and the last ten per drive are kept. Only folders of 10 MB or more are recorded, and
+changes under 50 MB are not listed. `-NoSnapshot` scans without saving.
+
 **The script** — same engine, no GUI.
 
 ```powershell
