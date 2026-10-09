@@ -84,6 +84,20 @@ header and beside the locked rows. Choosing it restarts the app and asks Windows
 permission, so you will need to run the scan again — which is why it asks up front rather
 than after you have waited for a scan.
 
+### Clean up buttons
+
+Two system areas can be cleared from the app, as administrator. Neither is file deletion
+by Space Report picking files — each uses the area's own supported procedure:
+
+- **Delivery Optimization** — runs Windows' `Delete-DeliveryOptimizationCache`, the same
+  as Disk Cleanup. Content Windows has pinned is kept.
+- **Windows Update cache** — pauses the update services, empties
+  `SoftwareDistribution\Download`, and starts them again (in a `finally`, so a failure can
+  never leave updates switched off). Update history is not touched. It refuses if an update
+  is installing or waiting for a restart, since those payloads may still be needed.
+
+Both measure the folder before and after, so the reported figure is what was really freed.
+
 ## What changed since last time
 
 Every scan is saved, and the next scan of the same drive is compared against it — so

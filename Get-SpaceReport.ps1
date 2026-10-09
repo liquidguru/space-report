@@ -100,7 +100,7 @@ param(
     [switch]$Clean,
     [string[]]$Paths,
     [string]$PathsFile,
-    [ValidateSet('DeliveryOptimization')]
+    [ValidateSet('DeliveryOptimization', 'WindowsUpdate')]
     [string]$RunCleanup,
     [string]$Select,
     [switch]$Permanent,
@@ -1172,7 +1172,7 @@ function Compare-Snapshots {
 # Only actions in the ValidateSet on the parameter can reach here.
 # ---------------------------------------------------------------------------
 if ($RunCleanup) {
-    $result = [ordered]@{ Action = $RunCleanup; Before = -1L; After = -1L; Freed = 0L; Error = $null }
+    $result = [ordered]@{ Action = $RunCleanup; Before = -1L; After = -1L; Freed = 0L; Error = $null; Note = $null }
 
     $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
              ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -1204,6 +1204,67 @@ if ($RunCleanup) {
                 # it too.
                 Delete-DeliveryOptimizationCache -Force -ErrorAction Stop
                 $result.After = & $measure $dirs
+                $result.Note = 'Anything left is content Windows has pinned and chose to keep.'
+            }
+            'WindowsUpdate' {
+                # There is no cmdlet for this one, so it is Microsoft's documented
+                # manual procedure: stop the update services, empty Download, start
+                # them again. Only the Download folder - never SoftwareDistribution
+                # itself, which holds update history (and the DO cache, handled above).
+                $dl = "$env:SystemRoot\SoftwareDistribution\Download"
+                $result.Before = & $measure @($dl)
+
+                # Refuse while an update is mid-flight. A pending restart means the
+                # payloads in Download may still be needed to finish installing.
+                $pending = @(
+                    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+                    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+                ) | Where-Object { Test-Path -LiteralPath $_ }
+                if ($pending) { throw 'Windows has an update waiting for a restart. Restart first, then clean up.' }
+                $busy = $false
+                try { $busy = (New-Object -ComObject Microsoft.Update.Installer).IsBusy } catch { }
+                if ($busy) { throw 'Windows Update is installing something right now. Try again when it has finished.' }
+
+                # Stop only what is running, and restart exactly that - in finally,
+                # so a failure part-way can never leave updates switched off.
+                $svcNames = 'wuauserv', 'bits'
+                $wasRunning = @(Get-Service -Name $svcNames -ErrorAction SilentlyContinue |
+                                Where-Object Status -eq 'Running' | ForEach-Object Name)
+                $left = 0
+                try {
+                    foreach ($n in $wasRunning) {
+                        Stop-Service -Name $n -Force -ErrorAction Stop
+                        (Get-Service -Name $n).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+                    }
+                    # Hand-rolled rather than Remove-Item -Recurse: Windows PowerShell
+                    # 5.1 follows junctions when recursing, which could empty a folder
+                    # outside Download. A reparse point is removed as a link only.
+                    $rm = {
+                        param([IO.DirectoryInfo]$Dir)
+                        foreach ($c in $Dir.EnumerateFileSystemInfos()) {
+                            try {
+                                if ($c.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                                    if ($c -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($c.FullName, $false) }
+                                    else { $c.Delete() }
+                                } elseif ($c -is [IO.DirectoryInfo]) {
+                                    & $rm $c
+                                    # Non-empty only if a file inside was in use,
+                                    # and that file has already been counted.
+                                    try { $c.Delete() } catch { }
+                                } else {
+                                    $c.Attributes = [IO.FileAttributes]::Normal
+                                    $c.Delete()
+                                }
+                            } catch { $script:left++ }
+                        }
+                    }
+                    if (Test-Path -LiteralPath $dl) { & $rm ([IO.DirectoryInfo]::new($dl)) }
+                } finally {
+                    foreach ($n in $wasRunning) { Start-Service -Name $n -ErrorAction SilentlyContinue }
+                }
+                $result.After = & $measure @($dl)
+                $result.Note = if ($left) { "$left item(s) were in use and were left alone." }
+                               else { 'Anything Windows still needs will simply be downloaded again.' }
             }
         }
         if ($result.Before -ge 0 -and $result.After -ge 0) {
@@ -1529,7 +1590,7 @@ $all = $files + $folders
 # ---------------------------------------------------------------------------
 $sysDrive = $env:SystemDrive
 $SystemAreas = @(
-  @{N='Windows Update cache'; P="$env:SystemRoot\SoftwareDistribution\Download"; V='TOOL';
+  @{N='Windows Update cache'; Act='WindowsUpdate'; P="$env:SystemRoot\SoftwareDistribution\Download"; V='TOOL';
     W='Update payloads already downloaded, and usually already installed.';
     H='Disk Cleanup > Windows Update Cleanup. Or: net stop wuauserv, empty the folder, net start wuauserv.'}
   @{N='Delivery Optimization files'; Act='DeliveryOptimization'; P="$env:SystemRoot\SoftwareDistribution\DeliveryOptimization"; V='SAFE';

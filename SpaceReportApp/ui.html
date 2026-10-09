@@ -367,6 +367,15 @@ function paintDrive(size, free){
 function onError(m){
   BUSY=false; el('scan').disabled=false;
   var title={scan:'Scan failed',cleanup:'Clean up failed'}[m.stage]||'Delete failed';
+  // A refused cleanup changes nothing, so keep the results and say why on top.
+  if(m.stage==='cleanup' && SYSTEM.length){
+    render();
+    el('main').insertAdjacentHTML('afterbegin','<div class="notice" style="border-color:#d8a23a88;'+
+      'background:#d8a23a18"><div><b>'+esc(title)+'</b> &mdash; '+esc(m.message||'Unknown error')+
+      '</div></div>');
+    el('main').scrollTop=0;
+    return;
+  }
   el('main').innerHTML='<div class="state"><h2>'+esc(title)+
     '</h2><div>'+esc(m.message||'Unknown error')+'</div></div>';
 }
@@ -624,9 +633,14 @@ function systemHtml(verdict){
       // Deliberately NOT a padlock. These are not blocked - they simply have a
       // proper reclaim route, and reusing the padlock made them read as
       // inaccessible when most of them are perfectly readable.
-      h+='<div class="row v-'+s.Verdict+' locked">'+
-         '<div class="box"><span class="lock" title="Reclaim this with the command shown. '+
-         'Space Report will not delete system areas file by file.">🔧</span></div>'+
+      // A row the app can clean right now is shown at full strength, so the
+      // one thing on this screen you can act on does not look disabled.
+      var act=!!(s.Action && ELEVATED && Number(s.Bytes)!==0);
+      h+='<div class="row v-'+s.Verdict+(act?'':' locked')+'">'+
+         '<div class="box">'+(act
+           ? '<span class="lock" style="opacity:1" title="Space Report can run this cleanup for you.">🧹</span>'
+           : '<span class="lock" title="Reclaim this with the command shown. '+
+             'Space Report will not delete system areas file by file.">🔧</span>')+'</div>'+
          '<div class="mid"><div class="nm">'+esc(s.Name)+'</div>'+
          '<div class="p" data-r="'+esc(s.Path)+'" title="Show in Explorer">'+esc(s.Path)+'</div>'+
          '<div class="wh">'+esc(s.What)+'</div>'+
@@ -640,6 +654,20 @@ function systemHtml(verdict){
     });
     return h;
 }
+
+// What the confirm dialog says for each cleanup the host allows.
+var CLEANUPS = {
+  DeliveryOptimization: {
+    sub: 'Windows&rsquo; own cleanup decides exactly what goes.',
+    how: 'This runs Windows&rsquo; supported cleanup (the same as Disk Cleanup &rsaquo; Delivery '+
+         'Optimization Files). Space Report does not delete these files itself. Content Windows '+
+         'has pinned is kept.'},
+  WindowsUpdate: {
+    sub: 'update payloads Windows has already downloaded.',
+    how: 'Windows Update is paused for a few seconds while the Download folder is emptied, then '+
+         'started again. Update history is not touched. If an update is installing or waiting '+
+         'for a restart, nothing is done and you are told why.'}
+};
 
 // A system area with a supported Windows cleanup gets a button that asks
 // Windows to do it. Needs admin, so it is disabled - with the reason - otherwise.
@@ -663,11 +691,9 @@ el('main').addEventListener('click', function(e){
     var b=Number(t.getAttribute('data-b'));
     PENDING_CLEAN=t.getAttribute('data-act');
     el('mtitle').textContent='Clean up '+t.getAttribute('data-name')+'?';
-    el('mbody').innerHTML='<div class="sub" style="color:var(--dim)">About '+fmt(b)+
-      ' &mdash; Windows&rsquo; own cleanup decides exactly what goes.</div>';
-    el('mlist').innerHTML='<div class="mrow"><span>This runs Windows&rsquo; supported cleanup '+
-      '(the same as Disk Cleanup &rsaquo; Delivery Optimization Files). Space Report does not '+
-      'delete these files itself. Content Windows has pinned is kept.</span></div>';
+    var c=CLEANUPS[PENDING_CLEAN]||CLEANUPS.DeliveryOptimization;
+    el('mbody').innerHTML='<div class="sub" style="color:var(--dim)">About '+fmt(b)+' &mdash; '+c.sub+'</div>';
+    el('mlist').innerHTML='<div class="mrow"><span>'+c.how+'</span></div>';
     el('mwarn').innerHTML='<div class="warn" style="background:#3ab7d822;border-color:#3ab7d855;color:#a9e4f0">'+
       'This does not go to the Recycle Bin, but it is only a download cache &mdash; anything '+
       'Windows needs again is simply downloaded again.</div>';
@@ -791,7 +817,7 @@ function onCleaned(r){
   render();
   var note='<div class="notice" style="border-color:#1f7a3d88;background:#1f7a3d18"><div>'+
     '<b style="color:var(--safe)">Freed '+fmt(r.Freed)+'</b> &mdash; '+fmt(r.Before)+' before, '+
-    fmt(r.After)+' now. Anything left is content Windows has pinned and chose to keep.</div></div>';
+    fmt(r.After)+' now.'+(r.Note?' '+esc(r.Note):'')+'</div></div>';
   el('main').insertAdjacentHTML('afterbegin', note);
   el('main').scrollTop=0;
 }

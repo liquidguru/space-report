@@ -465,7 +465,7 @@ namespace SpaceReportApp
 
         // Mirrors the script's ValidateSet. Checked here too so the page can never
         // pass an arbitrary string through to the script, whatever it sends.
-        private static readonly string[] AllowedCleanups = { "DeliveryOptimization" };
+        private static readonly string[] AllowedCleanups = { "DeliveryOptimization", "WindowsUpdate" };
 
         private async Task DoCleanSystemAsync(JsonElement msg)
         {
